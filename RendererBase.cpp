@@ -46,4 +46,5 @@ void RendererBase::destroy_swapchain()
 
     vkDestroySwapchainKHR(_d.device, _d.oldSwapchain, nullptr);
     _d.oldSwapchain = _d.swapchain;
+    _d.swapchain = nullptr;
 }
