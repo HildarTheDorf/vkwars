@@ -147,11 +147,56 @@ Renderer::Renderer(Window& window)
     check_success(vkCreateDevice(_d.physicalDevice, &deviceCreateInfo, nullptr, &_d.device));
     vkGetDeviceQueue(_d.device, _d.queueFamilyIndex, 0, &_d.queue);
 
+    const auto surfaceFormat = select_surface_format(_d.physicalDevice, _d.surface);
+
+    VkAttachmentDescription colorAttachmentDesc = { };
+    colorAttachmentDesc.format = surfaceFormat.format;
+    colorAttachmentDesc.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachmentDesc.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachmentDesc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachmentDesc.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    colorAttachmentDesc.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentReference colorAttachmentRef = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+
+    VkSubpassDescription subpassDesc = { };
+    subpassDesc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpassDesc.colorAttachmentCount = 1;
+    subpassDesc.pColorAttachments = &colorAttachmentRef;
+
+    VkSubpassDependency subpassDep = { };
+    subpassDep.srcSubpass = VK_SUBPASS_EXTERNAL;
+    subpassDep.dstSubpass = 0;
+    subpassDep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    subpassDep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    subpassDep.srcAccessMask = 0;
+    subpassDep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    subpassDep.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+    VkRenderPassCreateInfo renderPassCreateInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
+    renderPassCreateInfo.attachmentCount = 1;
+    renderPassCreateInfo.pAttachments = &colorAttachmentDesc;
+    renderPassCreateInfo.subpassCount = 1;
+    renderPassCreateInfo.pSubpasses = &subpassDesc;
+    renderPassCreateInfo.dependencyCount = 1;
+    renderPassCreateInfo.pDependencies = &subpassDep;
+    check_success(vkCreateRenderPass(_d.device, &renderPassCreateInfo, nullptr, &_d.renderPass));
+
     // Reused during per-image data
     VkSemaphoreCreateInfo semaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
 
     for (auto& perFrame : _d.perFrame)
     {
+        VkCommandPoolCreateInfo commandPoolCreateInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+        commandPoolCreateInfo.queueFamilyIndex = _d.queueFamilyIndex;
+        check_success(vkCreateCommandPool(_d.device, &commandPoolCreateInfo, nullptr, &perFrame.commandPool));
+
+        VkCommandBufferAllocateInfo commandBufferAllocateInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+        commandBufferAllocateInfo.commandPool = perFrame.commandPool;
+        commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        commandBufferAllocateInfo.commandBufferCount = 1;
+        check_success(vkAllocateCommandBuffers(_d.device, &commandBufferAllocateInfo, &perFrame.commandBuffer));
+
         VkFenceCreateInfo fenceCreateInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
         fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         check_success(vkCreateFence(_d.device, &fenceCreateInfo, nullptr, &perFrame.fence));
@@ -161,24 +206,19 @@ Renderer::Renderer(Window& window)
     VkSurfaceCapabilitiesKHR surfaceCaps;
     check_success(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_d.physicalDevice, _d.surface, &surfaceCaps));
 
-    uint32_t numSurfaceFormats;
-    check_success(vkGetPhysicalDeviceSurfaceFormatsKHR(_d.physicalDevice, _d.surface, &numSurfaceFormats, nullptr));
-    std::vector<VkSurfaceFormatKHR> surfaceFormats(numSurfaceFormats);
-    check_success(vkGetPhysicalDeviceSurfaceFormatsKHR(_d.physicalDevice, _d.surface, &numSurfaceFormats, surfaceFormats.data()));
-
-    const auto surfaceFormat = select_surface_format(_d.physicalDevice, _d.surface);
+    _d.swapchainSize = surfaceCaps.currentExtent;
 
     VkSwapchainCreateInfoKHR swapchainCreateInfo = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
     swapchainCreateInfo.surface = _d.surface;
     swapchainCreateInfo.minImageCount = compute_image_count(surfaceCaps.minImageCount, surfaceCaps.maxImageCount);
     swapchainCreateInfo.imageFormat = surfaceFormat.format;
     swapchainCreateInfo.imageColorSpace = surfaceFormat.colorSpace;
-    swapchainCreateInfo.imageExtent = surfaceCaps.currentExtent;
+    swapchainCreateInfo.imageExtent = _d.swapchainSize;
     swapchainCreateInfo.imageArrayLayers = 1;
     swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     swapchainCreateInfo.preTransform = surfaceCaps.currentTransform;
     swapchainCreateInfo.compositeAlpha = select_surface_alpha(surfaceCaps.supportedCompositeAlpha);
-    swapchainCreateInfo.presentMode = select_present_mode(_d.physicalDevice, _d.surface); // TODO
+    swapchainCreateInfo.presentMode = select_present_mode(_d.physicalDevice, _d.surface);
     swapchainCreateInfo.clipped = VK_TRUE;
     check_success(vkCreateSwapchainKHR(_d.device, &swapchainCreateInfo, nullptr, &_d.swapchain));
 
@@ -188,8 +228,28 @@ Renderer::Renderer(Window& window)
     check_success(vkGetSwapchainImagesKHR(_d.device, _d.swapchain, &numSwapchainImages, swapchainImages.data()));
 
     _d.perImage.resize(numSwapchainImages);
-    for (auto& perImage : _d.perImage)
+    for (uint32_t i = 0; i < numSwapchainImages; ++i)
     {
+        auto& perImage = _d.perImage[i];
+
+        VkImageViewCreateInfo imageViewCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        imageViewCreateInfo.image = swapchainImages[i];
+        imageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        imageViewCreateInfo.format = surfaceFormat.format;
+        imageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        imageViewCreateInfo.subresourceRange.layerCount = 1;
+        imageViewCreateInfo.subresourceRange.levelCount = 1;
+        check_success(vkCreateImageView(_d.device, &imageViewCreateInfo, nullptr, &perImage.imageView));
+
+        VkFramebufferCreateInfo framebufferCreateInfo = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+        framebufferCreateInfo.renderPass = _d.renderPass;
+        framebufferCreateInfo.attachmentCount = 1;
+        framebufferCreateInfo.pAttachments = &perImage.imageView;
+        framebufferCreateInfo.width = _d.swapchainSize.width;
+        framebufferCreateInfo.height = _d.swapchainSize.height;
+        framebufferCreateInfo.layers = 1;
+        check_success(vkCreateFramebuffer(_d.device, &framebufferCreateInfo, nullptr, &perImage.framebuffer));
+
         check_success(vkCreateSemaphore(_d.device, &semaphoreCreateInfo, nullptr, &perImage.renderCompleteSemaphore));
     }
 }
@@ -204,7 +264,8 @@ void Renderer::render()
     const auto& perImage = _d.perImage[imageIndex];
 
     check_success(vkWaitForFences(_d.device, 1, &perFrame.fence, VK_TRUE, UINT64_MAX));
-    check_success(vkResetFences(_d.device, 1, &perFrame.fence));
+
+    record_command_buffer(perFrame, perImage);
 
     const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 
@@ -212,8 +273,12 @@ void Renderer::render()
     submitInfo.waitSemaphoreCount = 1;
     submitInfo.pWaitSemaphores = &perFrame.imageAcquiredSemaphore;
     submitInfo.pWaitDstStageMask = &waitStage;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &perFrame.commandBuffer;
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = &perImage.renderCompleteSemaphore;
+
+    check_success(vkResetFences(_d.device, 1, &perFrame.fence));
     check_success(vkQueueSubmit(_d.queue, 1, &submitInfo, perFrame.fence));
 
     VkPresentInfoKHR presentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
@@ -223,4 +288,25 @@ void Renderer::render()
     presentInfo.pSwapchains = &_d.swapchain;
     presentInfo.pImageIndices = &imageIndex;
     check_success(vkQueuePresentKHR(_d.queue, &presentInfo));
+}
+
+void Renderer::record_command_buffer(const PerFrameData& perFrame, const PerImageData& perImage)
+{
+    check_success(vkResetCommandPool(_d.device, perFrame.commandPool, 0));
+
+    VkClearValue clearValue = { };
+    clearValue.color.float32[3] = 1.0f;
+
+    VkCommandBufferBeginInfo commandBufferBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    VkRenderPassBeginInfo renderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+    renderPassBeginInfo.renderPass = _d.renderPass;
+    renderPassBeginInfo.renderArea = { {}, _d.swapchainSize };
+    renderPassBeginInfo.framebuffer = perImage.framebuffer;
+    renderPassBeginInfo.clearValueCount = 1;
+    renderPassBeginInfo.pClearValues = &clearValue;
+
+    check_success(vkBeginCommandBuffer(perFrame.commandBuffer, &commandBufferBeginInfo));
+    vkCmdBeginRenderPass(perFrame.commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdEndRenderPass(perFrame.commandBuffer);
+    check_success(vkEndCommandBuffer(perFrame.commandBuffer));
 }

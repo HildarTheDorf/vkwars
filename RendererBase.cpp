@@ -14,7 +14,8 @@ RendererBase::~RendererBase()
         for (const auto& perImage : _d.perImage)
         {
             vkDestroySemaphore(_d.device, perImage.renderCompleteSemaphore, nullptr);
-
+            vkDestroyFramebuffer(_d.device, perImage.framebuffer, nullptr);
+            vkDestroyImageView(_d.device, perImage.imageView, nullptr);
         }
         vkDestroySwapchainKHR(_d.device, _d.swapchain, nullptr);
 
@@ -22,7 +23,11 @@ RendererBase::~RendererBase()
         {
             vkDestroySemaphore(_d.device, perFrame.imageAcquiredSemaphore, nullptr);
             vkDestroyFence(_d.device, perFrame.fence, nullptr);
+
+            vkDestroyCommandPool(_d.device, perFrame.commandPool, nullptr);
         }
+
+        vkDestroyRenderPass(_d.device, _d.renderPass, nullptr);
 
         vkDestroyDevice(_d.device, nullptr);
     }

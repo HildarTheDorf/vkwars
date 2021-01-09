@@ -7,12 +7,18 @@
 
 struct PerFrameData
 {
+    VkCommandPool commandPool;
+    VkCommandBuffer commandBuffer;
+
     VkFence fence;
     VkSemaphore imageAcquiredSemaphore;
 };
 
 struct PerImageData
 {
+    VkImageView imageView;
+    VkFramebuffer framebuffer;
+
     VkSemaphore renderCompleteSemaphore;
 };
 
@@ -39,9 +45,12 @@ protected:
         VkDevice device;
         VkQueue queue;
 
+        VkRenderPass renderPass;
+
         uint32_t frameIndex;
         std::array<PerFrameData, MAX_FRAMES_IN_FLIGHT> perFrame;
 
+        VkExtent2D swapchainSize;
         VkSwapchainKHR swapchain;
         std::vector<PerImageData> perImage;
     } _d;
