@@ -270,7 +270,7 @@ void Renderer::render()
             rebuildRequired = true;
             break;
         default:
-            check_success(acquireResult);
+            check_success(presentResult);
             // Unreachable
             std::terminate();
         }
