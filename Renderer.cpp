@@ -294,10 +294,11 @@ void Renderer::record_command_buffer(const PerFrameData& perFrame, const PerImag
 {
     check_success(vkResetCommandPool(_d.device, perFrame.commandPool, 0));
 
+    VkCommandBufferBeginInfo commandBufferBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+
     VkClearValue clearValue = { };
     clearValue.color.float32[3] = 1.0f;
 
-    VkCommandBufferBeginInfo commandBufferBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     VkRenderPassBeginInfo renderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
     renderPassBeginInfo.renderPass = _d.renderPass;
     renderPassBeginInfo.renderArea = { {}, _d.swapchainSize };
