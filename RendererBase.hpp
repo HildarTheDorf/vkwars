@@ -47,7 +47,7 @@ protected:
 
         VkRenderPass renderPass;
 
-        uint32_t frameIndex;
+        uint32_t nextFrameIndex;
         std::array<PerFrameData, MAX_FRAMES_IN_FLIGHT> perFrame;
 
         VkExtent2D swapchainSize;

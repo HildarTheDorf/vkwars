@@ -256,8 +256,8 @@ Renderer::Renderer(Window& window)
 
 void Renderer::render()
 {
-    _d.frameIndex = (_d.frameIndex + 1) % _d.perFrame.size();
-    const auto& perFrame = _d.perFrame[_d.frameIndex];
+    const auto& perFrame = _d.perFrame[_d.nextFrameIndex++];
+    _d.nextFrameIndex %= _d.perFrame.size();
 
     uint32_t imageIndex;
     check_success(vkAcquireNextImageKHR(_d.device, _d.swapchain, UINT64_MAX, perFrame.imageAcquiredSemaphore, nullptr, &imageIndex));
