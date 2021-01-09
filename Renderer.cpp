@@ -128,6 +128,7 @@ Renderer::Renderer(Window& window)
     check_success(window.create_vulkan_surface(_d.instance, &_d.surface));
 
     std::tie(_d.physicalDevice, _d.queueFamilyIndex) = select_device_and_queue(_d.instance, _d.surface);
+    _d.surfaceFormat = select_surface_format(_d.physicalDevice, _d.surface);
 
     const float queuePriority = 0.0;
 
@@ -147,10 +148,8 @@ Renderer::Renderer(Window& window)
     check_success(vkCreateDevice(_d.physicalDevice, &deviceCreateInfo, nullptr, &_d.device));
     vkGetDeviceQueue(_d.device, _d.queueFamilyIndex, 0, &_d.queue);
 
-    const auto surfaceFormat = select_surface_format(_d.physicalDevice, _d.surface);
-
     VkAttachmentDescription colorAttachmentDesc = { };
-    colorAttachmentDesc.format = surfaceFormat.format;
+    colorAttachmentDesc.format = _d.surfaceFormat.format;
     colorAttachmentDesc.samples = VK_SAMPLE_COUNT_1_BIT;
     colorAttachmentDesc.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachmentDesc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -182,9 +181,6 @@ Renderer::Renderer(Window& window)
     renderPassCreateInfo.pDependencies = &subpassDep;
     check_success(vkCreateRenderPass(_d.device, &renderPassCreateInfo, nullptr, &_d.renderPass));
 
-    // Reused during per-image data
-    VkSemaphoreCreateInfo semaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-
     for (auto& perFrame : _d.perFrame)
     {
         VkCommandPoolCreateInfo commandPoolCreateInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
@@ -200,9 +196,94 @@ Renderer::Renderer(Window& window)
         VkFenceCreateInfo fenceCreateInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
         fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         check_success(vkCreateFence(_d.device, &fenceCreateInfo, nullptr, &perFrame.fence));
+
+        VkSemaphoreCreateInfo semaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
         check_success(vkCreateSemaphore(_d.device, &semaphoreCreateInfo, nullptr, &perFrame.imageAcquiredSemaphore));
     }
 
+    build_swapchain();
+}
+
+void Renderer::render()
+{
+    const auto& perFrame = _d.perFrame[_d.nextFrameIndex++];
+    _d.nextFrameIndex %= _d.perFrame.size();
+
+    uint32_t imageIndex;
+    const auto acquireResult = vkAcquireNextImageKHR(_d.device, _d.swapchain, UINT64_MAX, perFrame.imageAcquiredSemaphore, nullptr, &imageIndex);
+
+    bool swapchainUsable, rebuildRequired;
+    switch (acquireResult)
+    {
+    case VK_SUCCESS:
+        swapchainUsable = true;
+        rebuildRequired = false;
+        break;
+    case VK_SUBOPTIMAL_KHR:
+        swapchainUsable = true;
+        rebuildRequired = true;
+        break;
+    case VK_ERROR_OUT_OF_DATE_KHR:
+        swapchainUsable = false;
+        rebuildRequired = true;
+        break;
+    default:
+        check_success(acquireResult);
+        // Unreachable
+        std::terminate();
+    }
+    if (swapchainUsable)
+    {
+        const auto& perImage = _d.perImage[imageIndex];
+
+        check_success(vkWaitForFences(_d.device, 1, &perFrame.fence, VK_TRUE, UINT64_MAX));
+
+        record_command_buffer(perFrame, perImage);
+
+        const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+        VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+        submitInfo.waitSemaphoreCount = 1;
+        submitInfo.pWaitSemaphores = &perFrame.imageAcquiredSemaphore;
+        submitInfo.pWaitDstStageMask = &waitStage;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &perFrame.commandBuffer;
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = &perImage.renderCompleteSemaphore;
+
+        check_success(vkResetFences(_d.device, 1, &perFrame.fence));
+        check_success(vkQueueSubmit(_d.queue, 1, &submitInfo, perFrame.fence));
+
+        VkPresentInfoKHR presentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+        presentInfo.waitSemaphoreCount = 1;
+        presentInfo.pWaitSemaphores = &perImage.renderCompleteSemaphore;
+        presentInfo.swapchainCount = 1;
+        presentInfo.pSwapchains = &_d.swapchain;
+        presentInfo.pImageIndices = &imageIndex;
+        const auto presentResult = vkQueuePresentKHR(_d.queue, &presentInfo);
+        switch (presentResult)
+        {
+        case VK_SUCCESS:
+            break;
+        case VK_SUBOPTIMAL_KHR:
+        case VK_ERROR_OUT_OF_DATE_KHR:
+            rebuildRequired = true;
+            break;
+        default:
+            check_success(acquireResult);
+            // Unreachable
+            std::terminate();
+        }
+    }
+
+    if (rebuildRequired)
+    {
+        rebuild_swapchain();
+    }
+}
+
+void Renderer::build_swapchain()
+{
     VkSurfaceCapabilitiesKHR surfaceCaps;
     check_success(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_d.physicalDevice, _d.surface, &surfaceCaps));
 
@@ -211,8 +292,8 @@ Renderer::Renderer(Window& window)
     VkSwapchainCreateInfoKHR swapchainCreateInfo = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
     swapchainCreateInfo.surface = _d.surface;
     swapchainCreateInfo.minImageCount = compute_image_count(surfaceCaps.minImageCount, surfaceCaps.maxImageCount);
-    swapchainCreateInfo.imageFormat = surfaceFormat.format;
-    swapchainCreateInfo.imageColorSpace = surfaceFormat.colorSpace;
+    swapchainCreateInfo.imageFormat = _d.surfaceFormat.format;
+    swapchainCreateInfo.imageColorSpace = _d.surfaceFormat.colorSpace;
     swapchainCreateInfo.imageExtent = _d.swapchainSize;
     swapchainCreateInfo.imageArrayLayers = 1;
     swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
@@ -220,6 +301,7 @@ Renderer::Renderer(Window& window)
     swapchainCreateInfo.compositeAlpha = select_surface_alpha(surfaceCaps.supportedCompositeAlpha);
     swapchainCreateInfo.presentMode = select_present_mode(_d.physicalDevice, _d.surface);
     swapchainCreateInfo.clipped = VK_TRUE;
+    swapchainCreateInfo.oldSwapchain = _d.oldSwapchain;
     check_success(vkCreateSwapchainKHR(_d.device, &swapchainCreateInfo, nullptr, &_d.swapchain));
 
     uint32_t numSwapchainImages;
@@ -235,7 +317,7 @@ Renderer::Renderer(Window& window)
         VkImageViewCreateInfo imageViewCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
         imageViewCreateInfo.image = swapchainImages[i];
         imageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        imageViewCreateInfo.format = surfaceFormat.format;
+        imageViewCreateInfo.format = _d.surfaceFormat.format;
         imageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         imageViewCreateInfo.subresourceRange.layerCount = 1;
         imageViewCreateInfo.subresourceRange.levelCount = 1;
@@ -250,44 +332,22 @@ Renderer::Renderer(Window& window)
         framebufferCreateInfo.layers = 1;
         check_success(vkCreateFramebuffer(_d.device, &framebufferCreateInfo, nullptr, &perImage.framebuffer));
 
+        VkSemaphoreCreateInfo semaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
         check_success(vkCreateSemaphore(_d.device, &semaphoreCreateInfo, nullptr, &perImage.renderCompleteSemaphore));
     }
 }
 
-void Renderer::render()
+void Renderer::rebuild_swapchain()
 {
-    const auto& perFrame = _d.perFrame[_d.nextFrameIndex++];
-    _d.nextFrameIndex %= _d.perFrame.size();
+    std::array<VkFence, MAX_FRAMES_IN_FLIGHT> allFences;
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+    {
+        allFences[i] = _d.perFrame[i].fence;
+    }
+    check_success(vkWaitForFences(_d.device, allFences.size(), allFences.data(), true, UINT64_MAX));
 
-    uint32_t imageIndex;
-    check_success(vkAcquireNextImageKHR(_d.device, _d.swapchain, UINT64_MAX, perFrame.imageAcquiredSemaphore, nullptr, &imageIndex));
-    const auto& perImage = _d.perImage[imageIndex];
-
-    check_success(vkWaitForFences(_d.device, 1, &perFrame.fence, VK_TRUE, UINT64_MAX));
-
-    record_command_buffer(perFrame, perImage);
-
-    const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-
-    VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-    submitInfo.waitSemaphoreCount = 1;
-    submitInfo.pWaitSemaphores = &perFrame.imageAcquiredSemaphore;
-    submitInfo.pWaitDstStageMask = &waitStage;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &perFrame.commandBuffer;
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &perImage.renderCompleteSemaphore;
-
-    check_success(vkResetFences(_d.device, 1, &perFrame.fence));
-    check_success(vkQueueSubmit(_d.queue, 1, &submitInfo, perFrame.fence));
-
-    VkPresentInfoKHR presentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
-    presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &perImage.renderCompleteSemaphore;
-    presentInfo.swapchainCount = 1;
-    presentInfo.pSwapchains = &_d.swapchain;
-    presentInfo.pImageIndices = &imageIndex;
-    check_success(vkQueuePresentKHR(_d.queue, &presentInfo));
+    destroy_swapchain();
+    build_swapchain();
 }
 
 void Renderer::record_command_buffer(const PerFrameData& perFrame, const PerImageData& perImage)

@@ -35,12 +35,15 @@ protected:
     RendererBase& operator=(const RendererBase&) = delete;
     RendererBase& operator=(RendererBase&&);
 
+    void destroy_swapchain();
+
     struct {
         VkInstance instance;
         VkSurfaceKHR surface;
 
         VkPhysicalDevice physicalDevice;
         uint32_t queueFamilyIndex;
+        VkSurfaceFormatKHR surfaceFormat;
 
         VkDevice device;
         VkQueue queue;
@@ -51,7 +54,7 @@ protected:
         std::array<PerFrameData, MAX_FRAMES_IN_FLIGHT> perFrame;
 
         VkExtent2D swapchainSize;
-        VkSwapchainKHR swapchain;
+        VkSwapchainKHR swapchain, oldSwapchain;
         std::vector<PerImageData> perImage;
     } _d;
 };

@@ -11,13 +11,9 @@ RendererBase::~RendererBase()
     if (_d.device)
     {
         vkDeviceWaitIdle(_d.device);
-        for (const auto& perImage : _d.perImage)
-        {
-            vkDestroySemaphore(_d.device, perImage.renderCompleteSemaphore, nullptr);
-            vkDestroyFramebuffer(_d.device, perImage.framebuffer, nullptr);
-            vkDestroyImageView(_d.device, perImage.imageView, nullptr);
-        }
-        vkDestroySwapchainKHR(_d.device, _d.swapchain, nullptr);
+        
+        destroy_swapchain();
+        vkDestroySwapchainKHR(_d.device, _d.oldSwapchain, nullptr);
 
         for (const auto& perFrame : _d.perFrame)
         {
@@ -36,4 +32,18 @@ RendererBase::~RendererBase()
         vkDestroySurfaceKHR(_d.instance, _d.surface, nullptr);
         vkDestroyInstance(_d.instance, nullptr);
     }
+}
+
+void RendererBase::destroy_swapchain()
+{
+    for (const auto& perImage : _d.perImage)
+    {
+        vkDestroySemaphore(_d.device, perImage.renderCompleteSemaphore, nullptr);
+        vkDestroyFramebuffer(_d.device, perImage.framebuffer, nullptr);
+        vkDestroyImageView(_d.device, perImage.imageView, nullptr);
+    }
+    _d.perImage.resize(0);
+
+    vkDestroySwapchainKHR(_d.device, _d.oldSwapchain, nullptr);
+    _d.oldSwapchain = _d.swapchain;
 }
