@@ -42,7 +42,7 @@ void RendererBase::destroy_swapchain()
         vkDestroyFramebuffer(_d.device, perImage.framebuffer, nullptr);
         vkDestroyImageView(_d.device, perImage.imageView, nullptr);
     }
-    _d.perImage.resize(0);
+    _d.perImage.clear();
 
     vkDestroySwapchainKHR(_d.device, _d.oldSwapchain, nullptr);
     _d.oldSwapchain = _d.swapchain;
