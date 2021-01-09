@@ -1,8 +1,10 @@
 #pragma once
 
+#include "RendererBase.hpp"
+
 class Window;
 
-class Renderer
+class Renderer : public RendererBase
 {
 public:
     explicit Renderer(Window& window);

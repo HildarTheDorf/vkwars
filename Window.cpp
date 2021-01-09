@@ -31,6 +31,16 @@ Window& Window::operator=(Window&& other)
     return *this;
 }
 
+VkResult Window::create_vulkan_surface(VkInstance instance, VkSurfaceKHR *pSurface)
+{
+    return glfwCreateWindowSurface(instance, _window, nullptr, pSurface);
+}
+
+const char **Window::get_required_vulkan_extensions(uint32_t *pEnabledExtensionCount)
+{
+    return glfwGetRequiredInstanceExtensions(pEnabledExtensionCount);
+}
+
 bool Window::is_closed() const
 {
     return glfwWindowShouldClose(_window);
