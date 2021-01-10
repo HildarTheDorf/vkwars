@@ -225,6 +225,7 @@ Renderer::Renderer(Window& window)
     for (auto& perFrame : _d.perFrame)
     {
         VkCommandPoolCreateInfo commandPoolCreateInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+        commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
         commandPoolCreateInfo.queueFamilyIndex = _d.queueFamilyIndex;
         check_success(vkCreateCommandPool(_d.device, &commandPoolCreateInfo, nullptr, &perFrame.commandPool));
 
@@ -353,7 +354,7 @@ void Renderer::build_swapchain()
     depthImageCreateInfo.arrayLayers = 1;
     depthImageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     depthImageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    depthImageCreateInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    depthImageCreateInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
 
     VmaAllocationCreateInfo depthImageAllocationInfo = { };
     depthImageAllocationInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
