@@ -13,4 +13,7 @@ target_compile_options(vkwars PRIVATE
 )
 target_include_directories(vkwars SYSTEM PRIVATE include)
 target_link_libraries(vkwars ${GLFW_LIBRARIES} ${VK_LIBRARIES})
-set_target_properties(vkwars PROPERTIES CXX_STANDARD 17)
+set_target_properties(vkwars PROPERTIES
+    CXX_STANDARD 17
+    CXX_EXTENSIONS OFF
+)
