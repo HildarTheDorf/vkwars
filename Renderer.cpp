@@ -16,13 +16,13 @@ constexpr void check_success(VkResult result)
     }
 }
 
-uint32_t compute_image_count(uint32_t min, uint32_t max)
+constexpr uint32_t compute_image_count(uint32_t min, uint32_t max)
 {
     uint32_t ret = std::max(min + 1, DESIRED_SWAPCHAIN_IMAGES);
     return max ? std::min(ret, max) : ret;
 }
 
-std::pair<VkPhysicalDevice, uint32_t> select_device_and_queue(VkInstance instance, VkSurfaceKHR surface)
+static std::pair<VkPhysicalDevice, uint32_t> select_device_and_queue(VkInstance instance, VkSurfaceKHR surface)
 {
     uint32_t numPhysicalDevices;
     check_success(vkEnumeratePhysicalDevices(instance, &numPhysicalDevices, nullptr));
@@ -53,7 +53,7 @@ std::pair<VkPhysicalDevice, uint32_t> select_device_and_queue(VkInstance instanc
     throw std::runtime_error("No supported Vulkan Device");
 }
 
-VkPresentModeKHR select_present_mode(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
+static VkPresentModeKHR select_present_mode(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
 {
     uint32_t numPresentModes;
     check_success(vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &numPresentModes, nullptr));
@@ -72,7 +72,7 @@ VkPresentModeKHR select_present_mode(VkPhysicalDevice physicalDevice, VkSurfaceK
     throw std::runtime_error("No supported present mode");
 }
 
-VkCompositeAlphaFlagBitsKHR select_surface_alpha(VkCompositeAlphaFlagsKHR flags)
+static VkCompositeAlphaFlagBitsKHR select_surface_alpha(VkCompositeAlphaFlagsKHR flags)
 {
     if (flags & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
     {
@@ -88,7 +88,7 @@ VkCompositeAlphaFlagBitsKHR select_surface_alpha(VkCompositeAlphaFlagsKHR flags)
     }
 }
 
-VkSurfaceFormatKHR select_surface_format(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
+static VkSurfaceFormatKHR select_surface_format(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
 {
     uint32_t numFormats;
     check_success(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &numFormats, nullptr));
