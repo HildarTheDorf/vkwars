@@ -25,6 +25,7 @@ RendererBase::~RendererBase()
 
         vkDestroyRenderPass(_d.device, _d.renderPass, nullptr);
 
+        vmaDestroyAllocator(_d.allocator);
         vkDestroyDevice(_d.device, nullptr);
     }
     if (_d.instance)
@@ -43,6 +44,11 @@ void RendererBase::destroy_swapchain()
         vkDestroyImageView(_d.device, perImage.imageView, nullptr);
     }
     _d.perImage.clear();
+
+    vkDestroyImageView(_d.device, _d.depthImageView, nullptr);
+    _d.depthImageView = nullptr;
+    vmaDestroyImage(_d.allocator, _d.depthImage, _d.depthMemory);
+    _d.depthImage = nullptr;
 
     vkDestroySwapchainKHR(_d.device, _d.oldSwapchain, nullptr);
     _d.oldSwapchain = _d.swapchain;

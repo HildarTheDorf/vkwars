@@ -1,6 +1,6 @@
 #pragma once
 
-#include <vulkan/vulkan.h>
+#include <vk_mem_alloc.h>
 
 #include <array>
 #include <vector>
@@ -44,9 +44,12 @@ protected:
         VkPhysicalDevice physicalDevice;
         uint32_t queueFamilyIndex;
         VkSurfaceFormatKHR surfaceFormat;
+        VkFormat depthFormat;
 
         VkDevice device;
         VkQueue queue;
+
+        VmaAllocator allocator;
 
         VkRenderPass renderPass;
 
@@ -55,6 +58,11 @@ protected:
 
         VkExtent2D swapchainSize;
         VkSwapchainKHR swapchain, oldSwapchain;
+
+        VkImage depthImage;
+        VmaAllocation depthMemory;
+        VkImageView depthImageView;
+
         std::vector<PerImageData> perImage;
     } _d;
 };

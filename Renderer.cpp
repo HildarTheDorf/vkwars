@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <stdexcept>
 
+constexpr uint32_t DESIRED_API_VERSION = VK_API_VERSION_1_2;
+constexpr auto DESIRED_DEPTH_FORMATS = std::array{ VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_X8_D24_UNORM_PACK32 };
 constexpr auto DESIRED_PRESENT_MODES = std::array{ VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR };
 constexpr uint32_t DESIRED_SWAPCHAIN_IMAGES = 3;
 
@@ -20,6 +22,21 @@ constexpr uint32_t compute_image_count(uint32_t min, uint32_t max)
 {
     uint32_t ret = std::max(min + 1, DESIRED_SWAPCHAIN_IMAGES);
     return max ? std::min(ret, max) : ret;
+}
+
+static VkFormat select_depth_format(VkPhysicalDevice physicalDevice)
+{
+    for (const auto desiredFormat : DESIRED_DEPTH_FORMATS)
+    {
+        VkFormatProperties formatProps;
+        vkGetPhysicalDeviceFormatProperties(physicalDevice, desiredFormat, &formatProps);
+        if (formatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+        {
+            return desiredFormat;
+        }
+    }
+
+    throw std::runtime_error("No supported depth format");
 }
 
 static std::pair<VkPhysicalDevice, uint32_t> select_device_and_queue(VkInstance instance, VkSurfaceKHR surface)
@@ -118,7 +135,7 @@ static VkSurfaceFormatKHR select_surface_format(VkPhysicalDevice physicalDevice,
 Renderer::Renderer(Window& window)
 {
     VkApplicationInfo applicationInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
-    applicationInfo.apiVersion = VK_API_VERSION_1_2;
+    applicationInfo.apiVersion = DESIRED_API_VERSION;
 
     VkInstanceCreateInfo instanceCreateInfo = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
     instanceCreateInfo.pApplicationInfo = &applicationInfo;
@@ -129,6 +146,7 @@ Renderer::Renderer(Window& window)
 
     std::tie(_d.physicalDevice, _d.queueFamilyIndex) = select_device_and_queue(_d.instance, _d.surface);
     _d.surfaceFormat = select_surface_format(_d.physicalDevice, _d.surface);
+    _d.depthFormat = select_depth_format(_d.physicalDevice);
 
     const float queuePriority = 0.0;
 
@@ -148,37 +166,60 @@ Renderer::Renderer(Window& window)
     check_success(vkCreateDevice(_d.physicalDevice, &deviceCreateInfo, nullptr, &_d.device));
     vkGetDeviceQueue(_d.device, _d.queueFamilyIndex, 0, &_d.queue);
 
-    VkAttachmentDescription colorAttachmentDesc = { };
-    colorAttachmentDesc.format = _d.surfaceFormat.format;
-    colorAttachmentDesc.samples = VK_SAMPLE_COUNT_1_BIT;
-    colorAttachmentDesc.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAttachmentDesc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachmentDesc.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAttachmentDesc.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    VmaAllocatorCreateInfo allocatorCreateInfo = { };
+    allocatorCreateInfo.physicalDevice = _d.physicalDevice;
+    allocatorCreateInfo.device = _d.device;
+    allocatorCreateInfo.instance = _d.instance;
+    allocatorCreateInfo.vulkanApiVersion = DESIRED_API_VERSION;
 
+    check_success(vmaCreateAllocator(&allocatorCreateInfo, &_d.allocator));
+
+    std::array<VkAttachmentDescription, 2> attachmentDescs = { };
+    attachmentDescs[0].format = _d.surfaceFormat.format;
+    attachmentDescs[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachmentDescs[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachmentDescs[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachmentDescs[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachmentDescs[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    attachmentDescs[1].format = _d.depthFormat;
+    attachmentDescs[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachmentDescs[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachmentDescs[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachmentDescs[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachmentDescs[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    
     VkAttachmentReference colorAttachmentRef = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference depthAttachmentRef = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
 
     VkSubpassDescription subpassDesc = { };
     subpassDesc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpassDesc.colorAttachmentCount = 1;
     subpassDesc.pColorAttachments = &colorAttachmentRef;
+    subpassDesc.pDepthStencilAttachment = &depthAttachmentRef;
 
-    VkSubpassDependency subpassDep = { };
-    subpassDep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    subpassDep.dstSubpass = 0;
-    subpassDep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    subpassDep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    subpassDep.srcAccessMask = 0;
-    subpassDep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    subpassDep.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+    std::array<VkSubpassDependency, 2> subpassDeps = { };
+    subpassDeps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    subpassDeps[0].dstSubpass = 0;
+    subpassDeps[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    subpassDeps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    subpassDeps[0].srcAccessMask = 0;
+    subpassDeps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    subpassDeps[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+    subpassDeps[1].srcSubpass = VK_SUBPASS_EXTERNAL;
+    subpassDeps[1].dstSubpass = 0;
+    subpassDeps[1].srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    subpassDeps[1].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    subpassDeps[1].srcAccessMask = 0;
+    subpassDeps[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    subpassDeps[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
     VkRenderPassCreateInfo renderPassCreateInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
-    renderPassCreateInfo.attachmentCount = 1;
-    renderPassCreateInfo.pAttachments = &colorAttachmentDesc;
+    renderPassCreateInfo.attachmentCount = attachmentDescs.size();
+    renderPassCreateInfo.pAttachments = attachmentDescs.data();
     renderPassCreateInfo.subpassCount = 1;
     renderPassCreateInfo.pSubpasses = &subpassDesc;
-    renderPassCreateInfo.dependencyCount = 1;
-    renderPassCreateInfo.pDependencies = &subpassDep;
+    renderPassCreateInfo.dependencyCount = subpassDeps.size();
+    renderPassCreateInfo.pDependencies = subpassDeps.data();
     check_success(vkCreateRenderPass(_d.device, &renderPassCreateInfo, nullptr, &_d.renderPass));
 
     for (auto& perFrame : _d.perFrame)
@@ -304,6 +345,30 @@ void Renderer::build_swapchain()
     swapchainCreateInfo.oldSwapchain = _d.oldSwapchain;
     check_success(vkCreateSwapchainKHR(_d.device, &swapchainCreateInfo, nullptr, &_d.swapchain));
 
+    VkImageCreateInfo depthImageCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    depthImageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
+    depthImageCreateInfo.format = _d.depthFormat;
+    depthImageCreateInfo.extent = { _d.swapchainSize.width, _d.swapchainSize.height, 1 };
+    depthImageCreateInfo.mipLevels = 1;
+    depthImageCreateInfo.arrayLayers = 1;
+    depthImageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthImageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    depthImageCreateInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+    VmaAllocationCreateInfo depthImageAllocationInfo = { };
+    depthImageAllocationInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+    check_success(vmaCreateImage(_d.allocator, &depthImageCreateInfo, &depthImageAllocationInfo, &_d.depthImage, &_d.depthMemory, nullptr));
+
+    VkImageViewCreateInfo depthImageViewCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    depthImageViewCreateInfo.image = _d.depthImage;
+    depthImageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    depthImageViewCreateInfo.format = _d.depthFormat;
+    depthImageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    depthImageViewCreateInfo.subresourceRange.layerCount = 1;
+    depthImageViewCreateInfo.subresourceRange.levelCount = 1;
+    check_success(vkCreateImageView(_d.device, &depthImageViewCreateInfo, nullptr, &_d.depthImageView));
+
     uint32_t numSwapchainImages;
     check_success(vkGetSwapchainImagesKHR(_d.device, _d.swapchain, &numSwapchainImages, nullptr));
     std::vector<VkImage> swapchainImages(numSwapchainImages);
@@ -323,10 +388,14 @@ void Renderer::build_swapchain()
         imageViewCreateInfo.subresourceRange.levelCount = 1;
         check_success(vkCreateImageView(_d.device, &imageViewCreateInfo, nullptr, &perImage.imageView));
 
+        std::array<VkImageView, 2> attachments = {};
+        attachments[0] = perImage.imageView;
+        attachments[1] = _d.depthImageView;
+
         VkFramebufferCreateInfo framebufferCreateInfo = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
         framebufferCreateInfo.renderPass = _d.renderPass;
-        framebufferCreateInfo.attachmentCount = 1;
-        framebufferCreateInfo.pAttachments = &perImage.imageView;
+        framebufferCreateInfo.attachmentCount = attachments.size();
+        framebufferCreateInfo.pAttachments = attachments.data();
         framebufferCreateInfo.width = _d.swapchainSize.width;
         framebufferCreateInfo.height = _d.swapchainSize.height;
         framebufferCreateInfo.layers = 1;
@@ -357,15 +426,15 @@ void Renderer::record_command_buffer(const PerFrameData& perFrame, const PerImag
     VkCommandBufferBeginInfo commandBufferBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    VkClearValue clearValue = { };
-    clearValue.color.float32[3] = 1.0f;
+    std::array<VkClearValue, 2> clearValues = { };
+    clearValues[0].color.float32[3] = 1.0f;
 
     VkRenderPassBeginInfo renderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
     renderPassBeginInfo.renderPass = _d.renderPass;
     renderPassBeginInfo.renderArea = { {}, _d.swapchainSize };
     renderPassBeginInfo.framebuffer = perImage.framebuffer;
-    renderPassBeginInfo.clearValueCount = 1;
-    renderPassBeginInfo.pClearValues = &clearValue;
+    renderPassBeginInfo.clearValueCount = clearValues.size();
+    renderPassBeginInfo.pClearValues = clearValues.data();
 
     check_success(vkBeginCommandBuffer(perFrame.commandBuffer, &commandBufferBeginInfo));
     vkCmdBeginRenderPass(perFrame.commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
