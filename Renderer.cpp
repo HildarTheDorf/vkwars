@@ -429,6 +429,7 @@ void Renderer::record_command_buffer(const PerFrameData& perFrame, const PerImag
 
     std::array<VkClearValue, 2> clearValues = { };
     clearValues[0].color.float32[3] = 1.0f;
+    clearValues[1].depthStencil.depth = 1.0f;
 
     VkRenderPassBeginInfo renderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
     renderPassBeginInfo.renderPass = _d.renderPass;
