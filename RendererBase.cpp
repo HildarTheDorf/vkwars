@@ -49,6 +49,7 @@ void RendererBase::destroy_swapchain()
     _d.depthImageView = nullptr;
     vmaDestroyImage(_d.allocator, _d.depthImage, _d.depthMemory);
     _d.depthImage = nullptr;
+    _d.depthMemory = nullptr;
 
     vkDestroySwapchainKHR(_d.device, _d.oldSwapchain, nullptr);
     _d.oldSwapchain = _d.swapchain;
