@@ -18,9 +18,6 @@ jobs:
         repo-name: lunarg-vulkan-focal
         keys: AA8452080E383F7E
     
-    - name: Install updates
-      run: sudo apt-get upgrade
-    
     - uses: actions/checkout@v2
 
     - name: Install dependencies
