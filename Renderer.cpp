@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <stdexcept>
 
-constexpr uint32_t DESIRED_API_VERSION = VK_API_VERSION_1_1;
+constexpr uint32_t DESIRED_API_VERSION = VK_API_VERSION_1_2;
 constexpr auto DESIRED_DEPTH_FORMATS = std::array{ VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_X8_D24_UNORM_PACK32 };
 constexpr auto DESIRED_PRESENT_MODES = std::array{ VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR };
 constexpr uint32_t DESIRED_SWAPCHAIN_IMAGES = 3;
