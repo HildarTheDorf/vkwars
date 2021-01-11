@@ -8,14 +8,14 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
 
     steps:      
     - name: Add lunarg repository
       uses: myci-actions/add-deb-repo@4
       with:
-        repo: deb https://packages.lunarg.com/vulkan bionic main
-        repo-name: lunarg-vulkan-bionic
+        repo: deb https://packages.lunarg.com/vulkan focal main
+        repo-name: lunarg-vulkan-focal
         keys: AA8452080E383F7E
     
     - name: Install updates
