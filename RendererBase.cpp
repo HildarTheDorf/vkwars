@@ -23,6 +23,8 @@ RendererBase::~RendererBase()
             vkDestroyCommandPool(_d.device, perFrame.commandPool, nullptr);
         }
 
+        vkDestroyDescriptorPool(_d.device, _d.uiDescriptorPool, nullptr);
+
         vkDestroyRenderPass(_d.device, _d.renderPass, nullptr);
 
         vmaDestroyAllocator(_d.allocator);

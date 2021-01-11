@@ -2,6 +2,8 @@
 
 #include "Window.hpp"
 
+#include "imgui/imgui_impl_vulkan.h"
+
 #include <algorithm>
 #include <stdexcept>
 
@@ -222,6 +224,14 @@ Renderer::Renderer(Window& window)
     renderPassCreateInfo.pDependencies = subpassDeps.data();
     check_success(vkCreateRenderPass(_d.device, &renderPassCreateInfo, nullptr, &_d.renderPass));
 
+    VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
+
+    VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    descriptorPoolCreateInfo.maxSets = 1;
+    descriptorPoolCreateInfo.poolSizeCount = 1;
+    descriptorPoolCreateInfo.pPoolSizes = &poolSize;
+    check_success(vkCreateDescriptorPool(_d.device, &descriptorPoolCreateInfo, nullptr, &_d.uiDescriptorPool));
+
     for (auto& perFrame : _d.perFrame)
     {
         VkCommandPoolCreateInfo commandPoolCreateInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
@@ -244,6 +254,26 @@ Renderer::Renderer(Window& window)
     }
 
     build_swapchain();
+
+    ImGui_ImplVulkan_InitInfo initInfo = { };
+    initInfo.Instance = _d.instance;
+    initInfo.PhysicalDevice = _d.physicalDevice;
+    initInfo.Device = _d.device;
+    initInfo.QueueFamily = _d.queueFamilyIndex;
+    initInfo.Queue = _d.queue;
+    initInfo.DescriptorPool = _d.uiDescriptorPool;
+    initInfo.MinImageCount = static_cast<uint32_t>(_d.perFrame.size());
+    initInfo.ImageCount = static_cast<uint32_t>(_d.perImage.size());
+    initInfo.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    initInfo.CheckVkResultFn = check_success;
+    ImGui_ImplVulkan_Init(&initInfo, _d.renderPass);
+
+    ImGui_ImplVulkan_CreateFontsTexture();
+}
+
+Renderer::~Renderer()
+{
+    ImGui_ImplVulkan_Shutdown();
 }
 
 void Renderer::render()
@@ -440,6 +470,7 @@ void Renderer::record_command_buffer(const PerFrameData& perFrame, const PerImag
 
     check_success(vkBeginCommandBuffer(perFrame.commandBuffer, &commandBufferBeginInfo));
     vkCmdBeginRenderPass(perFrame.commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), perFrame.commandBuffer);
     vkCmdEndRenderPass(perFrame.commandBuffer);
     check_success(vkEndCommandBuffer(perFrame.commandBuffer));
 }

@@ -29,11 +29,11 @@ public:
 protected:
     RendererBase();
     RendererBase(const RendererBase&) = delete;
-    RendererBase(RendererBase&&);
+    RendererBase(RendererBase&&) noexcept;
     ~RendererBase();
 
     RendererBase& operator=(const RendererBase&) = delete;
-    RendererBase& operator=(RendererBase&&);
+    RendererBase& operator=(RendererBase&&) noexcept;
 
     void destroy_swapchain();
 
@@ -52,6 +52,8 @@ protected:
         VmaAllocator allocator;
 
         VkRenderPass renderPass;
+
+        VkDescriptorPool uiDescriptorPool;
 
         uint32_t nextFrameIndex;
         std::array<PerFrameData, MAX_FRAMES_IN_FLIGHT> perFrame;

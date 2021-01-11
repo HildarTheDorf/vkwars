@@ -39,7 +39,7 @@ target_link_libraries(imgui glfw)
 
 add_executable(vkwars main.cpp Renderer.cpp RendererBase.cpp Window.cpp vk_mem_alloc.cpp)
 target_compile_options(vkwars PRIVATE
-    $<$<CXX_COMPILER_ID:AppleClang,Clang>: -Werror -Weverything -Wno-c++98-compat -Wno-missing-field-initializers -Wno-padded -Wno-switch-enum>
+    $<$<CXX_COMPILER_ID:AppleClang,Clang>: -Werror -Weverything -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-missing-field-initializers -Wno-padded -Wno-switch-enum>
     $<$<CXX_COMPILER_ID:GNU>: -Werror -Wall -Wextra -pedantic -Wno-missing-field-initializers>
     $<$<CXX_COMPILER_ID:MSVC>: /WX /W4>
 )
