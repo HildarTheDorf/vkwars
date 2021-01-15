@@ -6,7 +6,7 @@
 #include <stdexcept>
 
 constexpr VkDeviceSize STAGING_BUFFER_ALIGNMENT = 4;
-constexpr VkDeviceSize STAGING_BUFFER_SIZE = 1 << 25;
+constexpr VkDeviceSize STAGING_BUFFER_SIZE = 1 << 10;
 
 Uploader::Uploader(VkDevice device, VkQueue queue, VmaAllocator allocator, uint32_t queueFamilyIndex)
     :_queue(queue), _finishRequired(false)
@@ -15,6 +15,7 @@ Uploader::Uploader(VkDevice device, VkQueue queue, VmaAllocator allocator, uint3
     r.allocator = allocator;
 
     VkCommandPoolCreateInfo commandPoolCreateInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+    commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     commandPoolCreateInfo.queueFamilyIndex = queueFamilyIndex;
     check_success(vkCreateCommandPool(r.device, &commandPoolCreateInfo, nullptr, &d.commandPool));
 

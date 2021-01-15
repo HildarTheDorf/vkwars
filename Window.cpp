@@ -13,6 +13,7 @@ Window::Window()
     });
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
     _window = glfwCreateWindow(800, 600, "vkwars", nullptr, nullptr);
 
     ImGui_ImplGlfw_InitForVulkan(_window, true);
