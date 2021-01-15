@@ -1,6 +1,6 @@
 #include "Window.hpp"
 
-#include "imgui/imgui_impl_glfw.h"
+#include "imgui_impl_glfw.h"
 
 #include <mutex>
 

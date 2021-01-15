@@ -1,7 +1,7 @@
 #include "Renderer.hpp"
 #include "Window.hpp"
 
-#include "imgui/imgui.h"
+#include "imgui.h"
 
 static void render_ui()
 {

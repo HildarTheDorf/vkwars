@@ -1,59 +1,57 @@
 #include "RendererBase.hpp"
 
 RendererBase::RendererBase()
-    :_d{}
+    :d{}
 {
 
 }
 
 RendererBase::~RendererBase()
 {
-    if (_d.device)
-    {
-        vkDeviceWaitIdle(_d.device);
-        
+    if (d.device)
+    {   
         destroy_swapchain();
-        vkDestroySwapchainKHR(_d.device, _d.oldSwapchain, nullptr);
+        vkDestroySwapchainKHR(d.device, d.oldSwapchain, nullptr);
 
-        for (const auto& perFrame : _d.perFrame)
+        for (const auto& perFrame : d.perFrame)
         {
-            vkDestroySemaphore(_d.device, perFrame.imageAcquiredSemaphore, nullptr);
-            vkDestroyFence(_d.device, perFrame.fence, nullptr);
+            vkDestroySemaphore(d.device, perFrame.imageAcquiredSemaphore, nullptr);
+            vkDestroyFence(d.device, perFrame.fence, nullptr);
 
-            vkDestroyCommandPool(_d.device, perFrame.commandPool, nullptr);
+            vkDestroyCommandPool(d.device, perFrame.commandPool, nullptr);
         }
 
-        vkDestroyDescriptorPool(_d.device, _d.uiDescriptorPool, nullptr);
+        vkDestroyDescriptorPool(d.device, d.uiDescriptorPool, nullptr);
 
-        vkDestroyRenderPass(_d.device, _d.renderPass, nullptr);
+        vkDestroyRenderPass(d.device, d.renderPass, nullptr);
 
-        vmaDestroyAllocator(_d.allocator);
-        vkDestroyDevice(_d.device, nullptr);
+        vmaDestroyAllocator(d.allocator);
+        vkDestroyDevice(d.device, nullptr);
     }
-    if (_d.instance)
+    if (d.instance)
     {
-        vkDestroySurfaceKHR(_d.instance, _d.surface, nullptr);
-        vkDestroyInstance(_d.instance, nullptr);
+        vkDestroySurfaceKHR(d.instance, d.surface, nullptr);
+        vkDestroyInstance(d.instance, nullptr);
     }
 }
 
 void RendererBase::destroy_swapchain()
 {
-    for (const auto& perImage : _d.perImage)
+    for (const auto& perImage : d.perImage)
     {
-        vkDestroySemaphore(_d.device, perImage.renderCompleteSemaphore, nullptr);
-        vkDestroyFramebuffer(_d.device, perImage.framebuffer, nullptr);
-        vkDestroyImageView(_d.device, perImage.imageView, nullptr);
+        vkDestroySemaphore(d.device, perImage.renderCompleteSemaphore, nullptr);
+        vkDestroyFramebuffer(d.device, perImage.framebuffer, nullptr);
+        vkDestroyImageView(d.device, perImage.imageView, nullptr);
     }
-    _d.perImage.clear();
+    d.perImage.clear();
 
-    vkDestroyImageView(_d.device, _d.depthImageView, nullptr);
-    _d.depthImageView = nullptr;
-    vmaDestroyImage(_d.allocator, _d.depthImage, _d.depthMemory);
-    _d.depthImage = nullptr;
-    _d.depthMemory = nullptr;
+    vkDestroyImageView(d.device, d.depthImageView, nullptr);
+    d.depthImageView = nullptr;
+    vmaDestroyImage(d.allocator, d.depthImage, d.depthMemory);
+    d.depthImage = nullptr;
+    d.depthMemory = nullptr;
 
-    vkDestroySwapchainKHR(_d.device, _d.oldSwapchain, nullptr);
-    _d.oldSwapchain = _d.swapchain;
-    _d.swapchain = nullptr;
+    vkDestroySwapchainKHR(d.device, d.oldSwapchain, nullptr);
+    d.oldSwapchain = d.swapchain;
+    d.swapchain = nullptr;
 }

@@ -1,8 +1,10 @@
 #include "Renderer.hpp"
 
+#include "BadVkResult.hpp"
+#include "Uploader.hpp"
 #include "Window.hpp"
 
-#include "imgui/imgui_impl_vulkan.h"
+#include "imgui_impl_vulkan.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -11,14 +13,6 @@ constexpr uint32_t DESIRED_API_VERSION = VK_API_VERSION_1_2;
 constexpr auto DESIRED_DEPTH_FORMATS = std::array{ VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_X8_D24_UNORM_PACK32 };
 constexpr auto DESIRED_PRESENT_MODES = std::array{ VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR };
 constexpr uint32_t DESIRED_SWAPCHAIN_IMAGES = 3;
-
-constexpr void check_success(VkResult result)
-{
-    if (result)
-    {
-        throw std::runtime_error("Bad VkResult");
-    }
-}
 
 constexpr uint32_t compute_image_count(uint32_t min, uint32_t max)
 {
@@ -142,18 +136,18 @@ Renderer::Renderer(Window& window)
     VkInstanceCreateInfo instanceCreateInfo = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
     instanceCreateInfo.pApplicationInfo = &applicationInfo;
     instanceCreateInfo.ppEnabledExtensionNames = window.get_required_vulkan_extensions(&instanceCreateInfo.enabledExtensionCount);
-    check_success(vkCreateInstance(&instanceCreateInfo, nullptr, &_d.instance));
+    check_success(vkCreateInstance(&instanceCreateInfo, nullptr, &d.instance));
 
-    check_success(window.create_vulkan_surface(_d.instance, &_d.surface));
+    check_success(window.create_vulkan_surface(d.instance, &d.surface));
 
-    std::tie(_d.physicalDevice, _d.queueFamilyIndex) = select_device_and_queue(_d.instance, _d.surface);
-    _d.surfaceFormat = select_surface_format(_d.physicalDevice, _d.surface);
-    _d.depthFormat = select_depth_format(_d.physicalDevice);
+    std::tie(d.physicalDevice, d.queueFamilyIndex) = select_device_and_queue(d.instance, d.surface);
+    d.surfaceFormat = select_surface_format(d.physicalDevice, d.surface);
+    d.depthFormat = select_depth_format(d.physicalDevice);
 
     const float queuePriority = 0.0;
 
     VkDeviceQueueCreateInfo queueCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
-    queueCreateInfo.queueFamilyIndex = _d.queueFamilyIndex;
+    queueCreateInfo.queueFamilyIndex = d.queueFamilyIndex;
     queueCreateInfo.queueCount = 1;
     queueCreateInfo.pQueuePriorities = &queuePriority;
 
@@ -165,25 +159,28 @@ Renderer::Renderer(Window& window)
     deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
     deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions.data();
 
-    check_success(vkCreateDevice(_d.physicalDevice, &deviceCreateInfo, nullptr, &_d.device));
-    vkGetDeviceQueue(_d.device, _d.queueFamilyIndex, 0, &_d.queue);
+    check_success(vkCreateDevice(d.physicalDevice, &deviceCreateInfo, nullptr, &d.device));
+    vkGetDeviceQueue(d.device, d.queueFamilyIndex, 0, &d.queue);
 
     VmaAllocatorCreateInfo allocatorCreateInfo = { };
-    allocatorCreateInfo.physicalDevice = _d.physicalDevice;
-    allocatorCreateInfo.device = _d.device;
-    allocatorCreateInfo.instance = _d.instance;
+    allocatorCreateInfo.physicalDevice = d.physicalDevice;
+    allocatorCreateInfo.device = d.device;
+    allocatorCreateInfo.instance = d.instance;
     allocatorCreateInfo.vulkanApiVersion = DESIRED_API_VERSION;
 
-    check_success(vmaCreateAllocator(&allocatorCreateInfo, &_d.allocator));
+    check_success(vmaCreateAllocator(&allocatorCreateInfo, &d.allocator));
+
+    Uploader uploader(d.device, d.queue, d.allocator, d.queueFamilyIndex);
+    uploader.begin();
 
     std::array<VkAttachmentDescription, 2> attachmentDescs = { };
-    attachmentDescs[0].format = _d.surfaceFormat.format;
+    attachmentDescs[0].format = d.surfaceFormat.format;
     attachmentDescs[0].samples = VK_SAMPLE_COUNT_1_BIT;
     attachmentDescs[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachmentDescs[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     attachmentDescs[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     attachmentDescs[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    attachmentDescs[1].format = _d.depthFormat;
+    attachmentDescs[1].format = d.depthFormat;
     attachmentDescs[1].samples = VK_SAMPLE_COUNT_1_BIT;
     attachmentDescs[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachmentDescs[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -222,7 +219,7 @@ Renderer::Renderer(Window& window)
     renderPassCreateInfo.pSubpasses = &subpassDesc;
     renderPassCreateInfo.dependencyCount = static_cast<uint32_t>(subpassDeps.size());
     renderPassCreateInfo.pDependencies = subpassDeps.data();
-    check_success(vkCreateRenderPass(_d.device, &renderPassCreateInfo, nullptr, &_d.renderPass));
+    check_success(vkCreateRenderPass(d.device, &renderPassCreateInfo, nullptr, &d.renderPass));
 
     VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
 
@@ -230,61 +227,68 @@ Renderer::Renderer(Window& window)
     descriptorPoolCreateInfo.maxSets = 1;
     descriptorPoolCreateInfo.poolSizeCount = 1;
     descriptorPoolCreateInfo.pPoolSizes = &poolSize;
-    check_success(vkCreateDescriptorPool(_d.device, &descriptorPoolCreateInfo, nullptr, &_d.uiDescriptorPool));
+    check_success(vkCreateDescriptorPool(d.device, &descriptorPoolCreateInfo, nullptr, &d.uiDescriptorPool));
 
-    for (auto& perFrame : _d.perFrame)
+    for (auto& perFrame : d.perFrame)
     {
         VkCommandPoolCreateInfo commandPoolCreateInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
         commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-        commandPoolCreateInfo.queueFamilyIndex = _d.queueFamilyIndex;
-        check_success(vkCreateCommandPool(_d.device, &commandPoolCreateInfo, nullptr, &perFrame.commandPool));
+        commandPoolCreateInfo.queueFamilyIndex = d.queueFamilyIndex;
+        check_success(vkCreateCommandPool(d.device, &commandPoolCreateInfo, nullptr, &perFrame.commandPool));
 
         VkCommandBufferAllocateInfo commandBufferAllocateInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
         commandBufferAllocateInfo.commandPool = perFrame.commandPool;
         commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         commandBufferAllocateInfo.commandBufferCount = 1;
-        check_success(vkAllocateCommandBuffers(_d.device, &commandBufferAllocateInfo, &perFrame.commandBuffer));
+        check_success(vkAllocateCommandBuffers(d.device, &commandBufferAllocateInfo, &perFrame.commandBuffer));
 
         VkFenceCreateInfo fenceCreateInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
         fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-        check_success(vkCreateFence(_d.device, &fenceCreateInfo, nullptr, &perFrame.fence));
+        check_success(vkCreateFence(d.device, &fenceCreateInfo, nullptr, &perFrame.fence));
 
         VkSemaphoreCreateInfo semaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-        check_success(vkCreateSemaphore(_d.device, &semaphoreCreateInfo, nullptr, &perFrame.imageAcquiredSemaphore));
+        check_success(vkCreateSemaphore(d.device, &semaphoreCreateInfo, nullptr, &perFrame.imageAcquiredSemaphore));
     }
 
     build_swapchain();
 
     ImGui_ImplVulkan_InitInfo initInfo = { };
-    initInfo.Instance = _d.instance;
-    initInfo.PhysicalDevice = _d.physicalDevice;
-    initInfo.Device = _d.device;
-    initInfo.QueueFamily = _d.queueFamilyIndex;
-    initInfo.Queue = _d.queue;
-    initInfo.DescriptorPool = _d.uiDescriptorPool;
-    initInfo.MinImageCount = static_cast<uint32_t>(_d.perFrame.size());
-    initInfo.ImageCount = static_cast<uint32_t>(_d.perImage.size());
+    initInfo.Instance = d.instance;
+    initInfo.PhysicalDevice = d.physicalDevice;
+    initInfo.Device = d.device;
+    initInfo.QueueFamily = d.queueFamilyIndex;
+    initInfo.Queue = d.queue;
+    initInfo.DescriptorPool = d.uiDescriptorPool;
+    initInfo.MinImageCount = static_cast<uint32_t>(d.perFrame.size());
+    initInfo.ImageCount = static_cast<uint32_t>(d.perImage.size());
     initInfo.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     initInfo.CheckVkResultFn = check_success;
-    ImGui_ImplVulkan_Init(&initInfo, _d.renderPass);
+    ImGui_ImplVulkan_Init(&initInfo, d.renderPass);
 
-    ImGui_ImplVulkan_CreateFontsTexture();
+    ImGui_ImplVulkan_CreateFontsTexture(uploader.get_command_buffer());
+
+    uploader.end();
+
+    uploader.finish();
 }
 
 Renderer::~Renderer()
 {
+    vkDeviceWaitIdle(d.device);
     ImGui_ImplVulkan_Shutdown();
 }
 
 void Renderer::render()
 {
-    const auto& perFrame = _d.perFrame[_d.nextFrameIndex++];
-    _d.nextFrameIndex %= _d.perFrame.size();
+    const auto& perFrame = d.perFrame[d.nextFrameIndex++];
+    d.nextFrameIndex %= d.perFrame.size();
 
-    check_success(vkWaitForFences(_d.device, 1, &perFrame.fence, VK_TRUE, UINT64_MAX));
+    check_success(vkWaitForFences(d.device, 1, &perFrame.fence, VK_TRUE, UINT64_MAX));
+
+    ImGui_ImplVulkan_NewFrame();
 
     uint32_t imageIndex;
-    const auto acquireResult = vkAcquireNextImageKHR(_d.device, _d.swapchain, UINT64_MAX, perFrame.imageAcquiredSemaphore, nullptr, &imageIndex);
+    const auto acquireResult = vkAcquireNextImageKHR(d.device, d.swapchain, UINT64_MAX, perFrame.imageAcquiredSemaphore, nullptr, &imageIndex);
 
     bool swapchainUsable, rebuildRequired;
     switch (acquireResult)
@@ -308,7 +312,7 @@ void Renderer::render()
     }
     if (swapchainUsable)
     {
-        const auto& perImage = _d.perImage[imageIndex];
+        const auto& perImage = d.perImage[imageIndex];
 
         record_command_buffer(perFrame, perImage);
 
@@ -323,16 +327,16 @@ void Renderer::render()
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = &perImage.renderCompleteSemaphore;
 
-        check_success(vkResetFences(_d.device, 1, &perFrame.fence));
-        check_success(vkQueueSubmit(_d.queue, 1, &submitInfo, perFrame.fence));
+        check_success(vkResetFences(d.device, 1, &perFrame.fence));
+        check_success(vkQueueSubmit(d.queue, 1, &submitInfo, perFrame.fence));
 
         VkPresentInfoKHR presentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         presentInfo.waitSemaphoreCount = 1;
         presentInfo.pWaitSemaphores = &perImage.renderCompleteSemaphore;
         presentInfo.swapchainCount = 1;
-        presentInfo.pSwapchains = &_d.swapchain;
+        presentInfo.pSwapchains = &d.swapchain;
         presentInfo.pImageIndices = &imageIndex;
-        const auto presentResult = vkQueuePresentKHR(_d.queue, &presentInfo);
+        const auto presentResult = vkQueuePresentKHR(d.queue, &presentInfo);
         switch (presentResult)
         {
         case VK_SUCCESS:
@@ -357,29 +361,29 @@ void Renderer::render()
 void Renderer::build_swapchain()
 {
     VkSurfaceCapabilitiesKHR surfaceCaps;
-    check_success(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_d.physicalDevice, _d.surface, &surfaceCaps));
+    check_success(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(d.physicalDevice, d.surface, &surfaceCaps));
 
-    _d.swapchainSize = surfaceCaps.currentExtent;
+    d.swapchainSize = surfaceCaps.currentExtent;
 
     VkSwapchainCreateInfoKHR swapchainCreateInfo = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
-    swapchainCreateInfo.surface = _d.surface;
+    swapchainCreateInfo.surface = d.surface;
     swapchainCreateInfo.minImageCount = compute_image_count(surfaceCaps.minImageCount, surfaceCaps.maxImageCount);
-    swapchainCreateInfo.imageFormat = _d.surfaceFormat.format;
-    swapchainCreateInfo.imageColorSpace = _d.surfaceFormat.colorSpace;
-    swapchainCreateInfo.imageExtent = _d.swapchainSize;
+    swapchainCreateInfo.imageFormat = d.surfaceFormat.format;
+    swapchainCreateInfo.imageColorSpace = d.surfaceFormat.colorSpace;
+    swapchainCreateInfo.imageExtent = d.swapchainSize;
     swapchainCreateInfo.imageArrayLayers = 1;
     swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     swapchainCreateInfo.preTransform = surfaceCaps.currentTransform;
     swapchainCreateInfo.compositeAlpha = select_surface_alpha(surfaceCaps.supportedCompositeAlpha);
-    swapchainCreateInfo.presentMode = select_present_mode(_d.physicalDevice, _d.surface);
+    swapchainCreateInfo.presentMode = select_present_mode(d.physicalDevice, d.surface);
     swapchainCreateInfo.clipped = VK_TRUE;
-    swapchainCreateInfo.oldSwapchain = _d.oldSwapchain;
-    check_success(vkCreateSwapchainKHR(_d.device, &swapchainCreateInfo, nullptr, &_d.swapchain));
+    swapchainCreateInfo.oldSwapchain = d.oldSwapchain;
+    check_success(vkCreateSwapchainKHR(d.device, &swapchainCreateInfo, nullptr, &d.swapchain));
 
     VkImageCreateInfo depthImageCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     depthImageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
-    depthImageCreateInfo.format = _d.depthFormat;
-    depthImageCreateInfo.extent = { _d.swapchainSize.width, _d.swapchainSize.height, 1 };
+    depthImageCreateInfo.format = d.depthFormat;
+    depthImageCreateInfo.extent = { d.swapchainSize.width, d.swapchainSize.height, 1 };
     depthImageCreateInfo.mipLevels = 1;
     depthImageCreateInfo.arrayLayers = 1;
     depthImageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -389,51 +393,51 @@ void Renderer::build_swapchain()
     VmaAllocationCreateInfo depthImageAllocationInfo = { };
     depthImageAllocationInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
-    check_success(vmaCreateImage(_d.allocator, &depthImageCreateInfo, &depthImageAllocationInfo, &_d.depthImage, &_d.depthMemory, nullptr));
+    check_success(vmaCreateImage(d.allocator, &depthImageCreateInfo, &depthImageAllocationInfo, &d.depthImage, &d.depthMemory, nullptr));
 
     VkImageViewCreateInfo depthImageViewCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-    depthImageViewCreateInfo.image = _d.depthImage;
+    depthImageViewCreateInfo.image = d.depthImage;
     depthImageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    depthImageViewCreateInfo.format = _d.depthFormat;
+    depthImageViewCreateInfo.format = d.depthFormat;
     depthImageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     depthImageViewCreateInfo.subresourceRange.layerCount = 1;
     depthImageViewCreateInfo.subresourceRange.levelCount = 1;
-    check_success(vkCreateImageView(_d.device, &depthImageViewCreateInfo, nullptr, &_d.depthImageView));
+    check_success(vkCreateImageView(d.device, &depthImageViewCreateInfo, nullptr, &d.depthImageView));
 
     uint32_t numSwapchainImages;
-    check_success(vkGetSwapchainImagesKHR(_d.device, _d.swapchain, &numSwapchainImages, nullptr));
+    check_success(vkGetSwapchainImagesKHR(d.device, d.swapchain, &numSwapchainImages, nullptr));
     std::vector<VkImage> swapchainImages(numSwapchainImages);
-    check_success(vkGetSwapchainImagesKHR(_d.device, _d.swapchain, &numSwapchainImages, swapchainImages.data()));
+    check_success(vkGetSwapchainImagesKHR(d.device, d.swapchain, &numSwapchainImages, swapchainImages.data()));
 
-    _d.perImage.resize(numSwapchainImages);
+    d.perImage.resize(numSwapchainImages);
     for (uint32_t i = 0; i < numSwapchainImages; ++i)
     {
-        auto& perImage = _d.perImage[i];
+        auto& perImage = d.perImage[i];
 
         VkImageViewCreateInfo imageViewCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
         imageViewCreateInfo.image = swapchainImages[i];
         imageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        imageViewCreateInfo.format = _d.surfaceFormat.format;
+        imageViewCreateInfo.format = d.surfaceFormat.format;
         imageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         imageViewCreateInfo.subresourceRange.layerCount = 1;
         imageViewCreateInfo.subresourceRange.levelCount = 1;
-        check_success(vkCreateImageView(_d.device, &imageViewCreateInfo, nullptr, &perImage.imageView));
+        check_success(vkCreateImageView(d.device, &imageViewCreateInfo, nullptr, &perImage.imageView));
 
         std::array<VkImageView, 2> attachments = {};
         attachments[0] = perImage.imageView;
-        attachments[1] = _d.depthImageView;
+        attachments[1] = d.depthImageView;
 
         VkFramebufferCreateInfo framebufferCreateInfo = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-        framebufferCreateInfo.renderPass = _d.renderPass;
+        framebufferCreateInfo.renderPass = d.renderPass;
         framebufferCreateInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
         framebufferCreateInfo.pAttachments = attachments.data();
-        framebufferCreateInfo.width = _d.swapchainSize.width;
-        framebufferCreateInfo.height = _d.swapchainSize.height;
+        framebufferCreateInfo.width = d.swapchainSize.width;
+        framebufferCreateInfo.height = d.swapchainSize.height;
         framebufferCreateInfo.layers = 1;
-        check_success(vkCreateFramebuffer(_d.device, &framebufferCreateInfo, nullptr, &perImage.framebuffer));
+        check_success(vkCreateFramebuffer(d.device, &framebufferCreateInfo, nullptr, &perImage.framebuffer));
 
         VkSemaphoreCreateInfo semaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-        check_success(vkCreateSemaphore(_d.device, &semaphoreCreateInfo, nullptr, &perImage.renderCompleteSemaphore));
+        check_success(vkCreateSemaphore(d.device, &semaphoreCreateInfo, nullptr, &perImage.renderCompleteSemaphore));
     }
 }
 
@@ -442,9 +446,9 @@ void Renderer::rebuild_swapchain()
     std::array<VkFence, MAX_FRAMES_IN_FLIGHT> allFences;
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
     {
-        allFences[i] = _d.perFrame[i].fence;
+        allFences[i] = d.perFrame[i].fence;
     }
-    check_success(vkWaitForFences(_d.device, static_cast<uint32_t>(allFences.size()), allFences.data(), true, UINT64_MAX));
+    check_success(vkWaitForFences(d.device, static_cast<uint32_t>(allFences.size()), allFences.data(), true, UINT64_MAX));
 
     destroy_swapchain();
     build_swapchain();
@@ -452,7 +456,7 @@ void Renderer::rebuild_swapchain()
 
 void Renderer::record_command_buffer(const PerFrameData& perFrame, const PerImageData& perImage)
 {
-    check_success(vkResetCommandPool(_d.device, perFrame.commandPool, 0));
+    check_success(vkResetCommandPool(d.device, perFrame.commandPool, 0));
 
     VkCommandBufferBeginInfo commandBufferBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -462,8 +466,8 @@ void Renderer::record_command_buffer(const PerFrameData& perFrame, const PerImag
     clearValues[1].depthStencil.depth = 1.0f;
 
     VkRenderPassBeginInfo renderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-    renderPassBeginInfo.renderPass = _d.renderPass;
-    renderPassBeginInfo.renderArea = { {}, _d.swapchainSize };
+    renderPassBeginInfo.renderPass = d.renderPass;
+    renderPassBeginInfo.renderArea = { {}, d.swapchainSize };
     renderPassBeginInfo.framebuffer = perImage.framebuffer;
     renderPassBeginInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
     renderPassBeginInfo.pClearValues = clearValues.data();

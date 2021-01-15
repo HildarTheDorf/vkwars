@@ -33,17 +33,18 @@ else()
     set(PLATFORM_DEPENDENCIES ${GLFW_LIBRARIES} ${VK_LIBRARIES} Threads::Threads)
 endif()
 
-add_library(imgui ${imgui_SOURCE_DIR}/imgui.cpp ${imgui_SOURCE_DIR}/imgui_draw.cpp ${imgui_SOURCE_DIR}/imgui_widgets.cpp ${imgui_SOURCE_DIR}/examples/imgui_impl_glfw.cpp ${imgui_SOURCE_DIR}/examples/imgui_impl_vulkan.cpp)
-target_include_directories(imgui PRIVATE ${imgui_SOURCE_DIR})
+add_library(imgui ${imgui_SOURCE_DIR}/imgui.cpp ${imgui_SOURCE_DIR}/imgui_demo.cpp ${imgui_SOURCE_DIR}/imgui_draw.cpp ${imgui_SOURCE_DIR}/imgui_widgets.cpp ${imgui_SOURCE_DIR}/examples/imgui_impl_glfw.cpp ${imgui_SOURCE_DIR}/examples/imgui_impl_vulkan.cpp)
+target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR})
 target_link_libraries(imgui glfw)
 
-add_executable(vkwars main.cpp Renderer.cpp RendererBase.cpp Window.cpp vk_mem_alloc.cpp)
+add_executable(vkwars main.cpp BadVkResult.cpp Renderer.cpp RendererBase.cpp Uploader.cpp UploaderBase.cpp Window.cpp vk_mem_alloc.cpp)
 target_compile_options(vkwars PRIVATE
     $<$<CXX_COMPILER_ID:AppleClang,Clang>: -Werror -Weverything -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-missing-field-initializers -Wno-padded -Wno-switch-enum>
     $<$<CXX_COMPILER_ID:GNU>: -Werror -Wall -Wextra -pedantic -Wno-missing-field-initializers>
     $<$<CXX_COMPILER_ID:MSVC>: /WX /W4>
 )
 target_include_directories(vkwars SYSTEM PRIVATE include)
+target_include_directories(vkwars PRIVATE ${imgui_SOURCE_DIR}/examples)
 target_link_libraries(vkwars imgui ${PLATFORM_DEPENDENCIES})
 set_target_properties(vkwars PROPERTIES
     CXX_STANDARD 17

@@ -66,5 +66,5 @@ protected:
         VkImageView depthImageView;
 
         std::vector<PerImageData> perImage;
-    } _d;
+    } d;
 };
