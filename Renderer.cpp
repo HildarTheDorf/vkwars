@@ -160,7 +160,7 @@ Renderer::Renderer(Window& window)
     VkDeviceCreateInfo deviceCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     deviceCreateInfo.queueCreateInfoCount = 1;
     deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
-    deviceCreateInfo.enabledExtensionCount = deviceExtensions.size();
+    deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
     deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions.data();
 
     check_success(vkCreateDevice(_d.physicalDevice, &deviceCreateInfo, nullptr, &_d.device));
@@ -214,11 +214,11 @@ Renderer::Renderer(Window& window)
     subpassDeps[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
     VkRenderPassCreateInfo renderPassCreateInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
-    renderPassCreateInfo.attachmentCount = attachmentDescs.size();
+    renderPassCreateInfo.attachmentCount = static_cast<uint32_t>(attachmentDescs.size());
     renderPassCreateInfo.pAttachments = attachmentDescs.data();
     renderPassCreateInfo.subpassCount = 1;
     renderPassCreateInfo.pSubpasses = &subpassDesc;
-    renderPassCreateInfo.dependencyCount = subpassDeps.size();
+    renderPassCreateInfo.dependencyCount = static_cast<uint32_t>(subpassDeps.size());
     renderPassCreateInfo.pDependencies = subpassDeps.data();
     check_success(vkCreateRenderPass(_d.device, &renderPassCreateInfo, nullptr, &_d.renderPass));
 
@@ -395,7 +395,7 @@ void Renderer::build_swapchain()
 
         VkFramebufferCreateInfo framebufferCreateInfo = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
         framebufferCreateInfo.renderPass = _d.renderPass;
-        framebufferCreateInfo.attachmentCount = attachments.size();
+        framebufferCreateInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
         framebufferCreateInfo.pAttachments = attachments.data();
         framebufferCreateInfo.width = _d.swapchainSize.width;
         framebufferCreateInfo.height = _d.swapchainSize.height;
@@ -414,7 +414,7 @@ void Renderer::rebuild_swapchain()
     {
         allFences[i] = _d.perFrame[i].fence;
     }
-    check_success(vkWaitForFences(_d.device, allFences.size(), allFences.data(), true, UINT64_MAX));
+    check_success(vkWaitForFences(_d.device, static_cast<uint32_t>(allFences.size()), allFences.data(), true, UINT64_MAX));
 
     destroy_swapchain();
     build_swapchain();
@@ -435,7 +435,7 @@ void Renderer::record_command_buffer(const PerFrameData& perFrame, const PerImag
     renderPassBeginInfo.renderPass = _d.renderPass;
     renderPassBeginInfo.renderArea = { {}, _d.swapchainSize };
     renderPassBeginInfo.framebuffer = perImage.framebuffer;
-    renderPassBeginInfo.clearValueCount = clearValues.size();
+    renderPassBeginInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
     renderPassBeginInfo.pClearValues = clearValues.data();
 
     check_success(vkBeginCommandBuffer(perFrame.commandBuffer, &commandBufferBeginInfo));
