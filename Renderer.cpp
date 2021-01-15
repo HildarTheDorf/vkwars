@@ -251,6 +251,8 @@ void Renderer::render()
     const auto& perFrame = _d.perFrame[_d.nextFrameIndex++];
     _d.nextFrameIndex %= _d.perFrame.size();
 
+    check_success(vkWaitForFences(_d.device, 1, &perFrame.fence, VK_TRUE, UINT64_MAX));
+
     uint32_t imageIndex;
     const auto acquireResult = vkAcquireNextImageKHR(_d.device, _d.swapchain, UINT64_MAX, perFrame.imageAcquiredSemaphore, nullptr, &imageIndex);
 
@@ -277,8 +279,6 @@ void Renderer::render()
     if (swapchainUsable)
     {
         const auto& perImage = _d.perImage[imageIndex];
-
-        check_success(vkWaitForFences(_d.device, 1, &perFrame.fence, VK_TRUE, UINT64_MAX));
 
         record_command_buffer(perFrame, perImage);
 
