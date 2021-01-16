@@ -9,7 +9,9 @@ RendererBase::RendererBase()
 RendererBase::~RendererBase()
 {
     if (d.device)
-    {   
+    {
+        vkDeviceWaitIdle(d.device);
+
         destroy_swapchain();
         vkDestroySwapchainKHR(d.device, d.oldSwapchain, nullptr);
 
@@ -21,9 +23,16 @@ RendererBase::~RendererBase()
             vkDestroyCommandPool(d.device, perFrame.commandPool, nullptr);
         }
 
-        vkDestroyDescriptorPool(d.device, d.uiDescriptorPool, nullptr);
-
+        vkDestroyPipeline(d.device, d.uiPipeline, nullptr);
         vkDestroyRenderPass(d.device, d.renderPass, nullptr);
+
+        vkDestroyPipelineCache(d.device, d.pipelineCache, nullptr);
+
+        vkDestroyDescriptorPool(d.device, d.uiDescriptorPool, nullptr);
+        vkDestroyPipelineLayout(d.device, d.uiPipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(d.device, d.uiDescriptorSetLayout, nullptr);
+
+        vmaDestroyImage(d.allocator, d.fontImage, d.fontMemory);
 
         vmaDestroyAllocator(d.allocator);
         vkDestroyDevice(d.device, nullptr);

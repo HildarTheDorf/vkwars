@@ -6,7 +6,7 @@
 #include <stdexcept>
 
 constexpr VkDeviceSize STAGING_BUFFER_ALIGNMENT = 4;
-constexpr VkDeviceSize STAGING_BUFFER_SIZE = 1 << 10;
+constexpr VkDeviceSize STAGING_BUFFER_SIZE = 1 << 20;
 
 Uploader::Uploader(VkDevice device, VkQueue queue, VmaAllocator allocator, uint32_t queueFamilyIndex)
     :_queue(queue), _finishRequired(false)
@@ -91,8 +91,9 @@ void Uploader::upload(VkBuffer destinationBuffer, VkDeviceSize offset, VkDeviceS
     update_offset(size);
 }
 
-void Uploader::upload(VkImage destinationImage, const VkImageSubresourceLayers& subresource, VkExtent3D extent, VkDeviceSize size, const void *pSrc, VkPipelineStageFlags newStageMask, VkImageLayout newLayout, VkAccessFlags newAccess)
+void Uploader::upload(VkImage destinationImage, const VkImageSubresourceLayers& subresource, VkExtent3D extent, uint8_t formatSize, const void *pSrc, VkPipelineStageFlags newStageMask, VkImageLayout newLayout, VkAccessFlags newAccess)
 {
+    const auto size = extent.width * extent.height * extent.depth * formatSize;
     if (_currentOffset + size > STAGING_BUFFER_SIZE)
     {
         throw std::runtime_error("Staging buffer out of memory");

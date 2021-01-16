@@ -51,9 +51,18 @@ protected:
 
         VmaAllocator allocator;
 
-        VkRenderPass renderPass;
+        VkImage fontImage;
+        VmaAllocation fontMemory;
 
+        VkDescriptorSetLayout uiDescriptorSetLayout;
+        VkPipelineLayout uiPipelineLayout;
         VkDescriptorPool uiDescriptorPool;
+        VkDescriptorSet uiDescriptorSet;
+
+        VkPipelineCache pipelineCache;
+
+        VkRenderPass renderPass;
+        VkPipeline uiPipeline;
 
         uint32_t nextFrameIndex;
         std::array<PerFrameData, MAX_FRAMES_IN_FLIGHT> perFrame;

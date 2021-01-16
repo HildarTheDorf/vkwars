@@ -8,12 +8,6 @@ class Renderer : public RendererBase
 {
 public:
     explicit Renderer(Window& window);
-    Renderer(const Renderer&) = delete;
-    Renderer(Renderer&&) noexcept;
-    ~Renderer();
-
-    Renderer& operator=(const Renderer&) = delete;
-    Renderer& operator=(Renderer&&) noexcept;
 
     void render();
 private:

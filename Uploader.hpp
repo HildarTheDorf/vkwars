@@ -12,10 +12,7 @@ public:
     void end();
     VkResult finish();
     void upload(VkBuffer destinationBuffer, VkDeviceSize offset, VkDeviceSize size, const void *pSrc);
-    void upload(VkImage destinationImage, const VkImageSubresourceLayers& subresource, VkExtent3D extent, VkDeviceSize size, const void *pSrc, VkPipelineStageFlags newStageMask, VkImageLayout newLayout, VkAccessFlags newAccess);
-
-    // TODO: Delete me
-    VkCommandBuffer get_command_buffer() { return d.commandBuffer; }
+    void upload(VkImage destinationImage, const VkImageSubresourceLayers& subresource, VkExtent3D extent, uint8_t formatSize, const void *pSrc, VkPipelineStageFlags newStageMask, VkImageLayout newLayout, VkAccessFlags newAccess);
 
 private:
     void update_offset(VkDeviceSize size);

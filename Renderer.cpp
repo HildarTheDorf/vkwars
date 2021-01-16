@@ -4,9 +4,11 @@
 #include "Uploader.hpp"
 #include "Window.hpp"
 
-#include "imgui_impl_vulkan.h"
+#include "imgui.h"
 
 #include <algorithm>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 
 constexpr uint32_t DESIRED_API_VERSION = VK_API_VERSION_1_2;
@@ -18,6 +20,61 @@ constexpr uint32_t compute_image_count(uint32_t min, uint32_t max)
 {
     uint32_t ret = std::max(min + 1, DESIRED_SWAPCHAIN_IMAGES);
     return max ? std::min(ret, max) : ret;
+}
+
+static void draw_ui(VkCommandBuffer cb)
+{
+    const auto dd = ImGui::GetDrawData();
+    const auto& clip_off = dd->DisplayPos;
+    const auto& clip_scale = dd->FramebufferScale;
+
+    uint32_t idx_offset = 0;
+    uint32_t vtx_offset = 0;
+
+    for (auto i = 0; i < dd->CmdListsCount; ++i)
+    {
+        const auto cl = dd->CmdLists[i];
+        for (const auto& dc : cl->CmdBuffer)
+        {
+            ImVec4 clip_rect;
+            clip_rect.x = (dc.ClipRect.x - clip_off.x) * clip_scale.x;
+            clip_rect.y = (dc.ClipRect.y - clip_off.y) * clip_scale.y;
+            clip_rect.z = (dc.ClipRect.z - clip_off.x) * clip_scale.x;
+            clip_rect.w = (dc.ClipRect.w - clip_off.y) * clip_scale.y;
+
+            VkRect2D scissor;
+            scissor.offset.x = static_cast<int32_t>(clip_rect.x);
+            scissor.offset.y = static_cast<int32_t>(clip_rect.y);
+            scissor.extent.width = static_cast<uint32_t>(clip_rect.z - clip_rect.x);
+            scissor.extent.height = static_cast<uint32_t>(clip_rect.w - clip_rect.y);
+
+            vkCmdSetScissor(cb, 0, 1, &scissor);
+            //vkCmdDrawIndexed(cb, dc.ElemCount, 1, idx_offset + dc.IdxOffset, static_cast<int32_t>(vtx_offset + dc.VtxOffset), 0);
+        }
+        idx_offset += static_cast<uint32_t>(cl->IdxBuffer.Size);
+        vtx_offset += static_cast<uint32_t>(cl->VtxBuffer.Size);
+    }
+}
+
+static std::vector<uint8_t> load_file(const char *filename)
+{
+    std::ifstream file(filename, std::ios::binary);
+
+    std::vector<uint8_t> ret;
+
+    std::copy(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>(), std::back_inserter(ret));
+
+    return ret;
+}
+
+static std::vector<uint32_t> load_pipelinecache()
+{
+    const auto raw = load_file("pipelinecache.bin");
+
+    std::vector<uint32_t> ret(raw.size() / sizeof(uint32_t));
+    memcpy(ret.data(), raw.data(), sizeof(uint32_t) * ret.size());
+
+    return ret;
 }
 
 static VkFormat select_depth_format(VkPhysicalDevice physicalDevice)
@@ -170,8 +227,92 @@ Renderer::Renderer(Window& window)
 
     check_success(vmaCreateAllocator(&allocatorCreateInfo, &d.allocator));
 
+    unsigned char *fontPixels;
+    int fontWidth, fontHeight;
+    ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&fontPixels, &fontWidth, &fontHeight);
+
+    VkImageCreateInfo fontImageCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    fontImageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
+    fontImageCreateInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    fontImageCreateInfo.extent = { static_cast<uint32_t>(fontWidth), static_cast<uint32_t>(fontHeight), 1 };
+    fontImageCreateInfo.mipLevels = 1;
+    fontImageCreateInfo.arrayLayers = 1;
+    fontImageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    fontImageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    fontImageCreateInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+    VmaAllocationCreateInfo fontImageAllocationInfo = { };
+    fontImageAllocationInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+    check_success(vmaCreateImage(d.allocator, &fontImageCreateInfo, &fontImageAllocationInfo, &d.fontImage, &d.fontMemory, nullptr));
+
     Uploader uploader(d.device, d.queue, d.allocator, d.queueFamilyIndex);
     uploader.begin();
+    
+    uploader.upload(d.fontImage,
+        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, fontImageCreateInfo.extent, 4,
+        fontPixels,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT);
+
+    uploader.end();
+
+    VkDescriptorSetLayoutBinding fontTextureBinding = { };
+    fontTextureBinding.binding = 0;
+    fontTextureBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    fontTextureBinding.descriptorCount = 1;
+    fontTextureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fontTextureBinding.pImmutableSamplers = nullptr;
+
+    VkDescriptorSetLayoutCreateInfo uiDescriptorSetLayoutCreateInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+    uiDescriptorSetLayoutCreateInfo.bindingCount = 1;
+    uiDescriptorSetLayoutCreateInfo.pBindings = &fontTextureBinding;
+    check_success(vkCreateDescriptorSetLayout(d.device, &uiDescriptorSetLayoutCreateInfo, nullptr, &d.uiDescriptorSetLayout));
+
+    VkPipelineLayoutCreateInfo uiPipelineLayoutCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    uiPipelineLayoutCreateInfo.pushConstantRangeCount = 0;
+    uiPipelineLayoutCreateInfo.pPushConstantRanges = nullptr;
+    uiPipelineLayoutCreateInfo.setLayoutCount = 1;
+    uiPipelineLayoutCreateInfo.pSetLayouts = &d.uiDescriptorSetLayout;
+
+    check_success(vkCreatePipelineLayout(d.device, &uiPipelineLayoutCreateInfo, nullptr, &d.uiPipelineLayout));
+
+    VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
+
+    VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    descriptorPoolCreateInfo.maxSets = 1;
+    descriptorPoolCreateInfo.poolSizeCount = 1;
+    descriptorPoolCreateInfo.pPoolSizes = &poolSize;
+    check_success(vkCreateDescriptorPool(d.device, &descriptorPoolCreateInfo, nullptr, &d.uiDescriptorPool));
+
+    VkDescriptorSetAllocateInfo uiDescriptorSetAllocateInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    uiDescriptorSetAllocateInfo.descriptorPool = d.uiDescriptorPool;
+    uiDescriptorSetAllocateInfo.descriptorSetCount = 1;
+    uiDescriptorSetAllocateInfo.pSetLayouts = &d.uiDescriptorSetLayout;
+
+    check_success(vkAllocateDescriptorSets(d.device, &uiDescriptorSetAllocateInfo, &d.uiDescriptorSet));
+
+    VkDescriptorImageInfo fontImageInfo = { };
+    fontImageInfo.sampler = nullptr;
+    fontImageInfo.imageView = nullptr;
+    fontImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet descriptorWrite = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    descriptorWrite.dstSet = d.uiDescriptorSet;
+    descriptorWrite.dstBinding = 0;
+    descriptorWrite.dstArrayElement = 0;
+    descriptorWrite.descriptorCount = 1;
+    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorWrite.pImageInfo = &fontImageInfo;
+
+    vkUpdateDescriptorSets(d.device, 1, &descriptorWrite, 0, nullptr);
+
+    const auto pipelineCacheData = load_pipelinecache();
+
+    VkPipelineCacheCreateInfo pipelineCacheCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+    pipelineCacheCreateInfo.initialDataSize = sizeof(uint32_t) * pipelineCacheData.size();
+    pipelineCacheCreateInfo.pInitialData = pipelineCacheData.data();
+
+    check_success(vkCreatePipelineCache(d.device, &pipelineCacheCreateInfo, nullptr, &d.pipelineCache));
 
     std::array<VkAttachmentDescription, 2> attachmentDescs = { };
     attachmentDescs[0].format = d.surfaceFormat.format;
@@ -221,13 +362,7 @@ Renderer::Renderer(Window& window)
     renderPassCreateInfo.pDependencies = subpassDeps.data();
     check_success(vkCreateRenderPass(d.device, &renderPassCreateInfo, nullptr, &d.renderPass));
 
-    VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
-
-    VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-    descriptorPoolCreateInfo.maxSets = 1;
-    descriptorPoolCreateInfo.poolSizeCount = 1;
-    descriptorPoolCreateInfo.pPoolSizes = &poolSize;
-    check_success(vkCreateDescriptorPool(d.device, &descriptorPoolCreateInfo, nullptr, &d.uiDescriptorPool));
+    //check_success(vkCreateGraphicsPipelines()); 
 
     for (auto& perFrame : d.perFrame)
     {
@@ -252,30 +387,7 @@ Renderer::Renderer(Window& window)
 
     build_swapchain();
 
-    ImGui_ImplVulkan_InitInfo initInfo = { };
-    initInfo.Instance = d.instance;
-    initInfo.PhysicalDevice = d.physicalDevice;
-    initInfo.Device = d.device;
-    initInfo.QueueFamily = d.queueFamilyIndex;
-    initInfo.Queue = d.queue;
-    initInfo.DescriptorPool = d.uiDescriptorPool;
-    initInfo.MinImageCount = static_cast<uint32_t>(d.perFrame.size());
-    initInfo.ImageCount = static_cast<uint32_t>(d.perImage.size());
-    initInfo.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-    initInfo.CheckVkResultFn = check_success;
-    ImGui_ImplVulkan_Init(&initInfo, d.renderPass);
-
-    ImGui_ImplVulkan_CreateFontsTexture(uploader.get_command_buffer());
-
-    uploader.end();
-
     uploader.finish();
-}
-
-Renderer::~Renderer()
-{
-    vkDeviceWaitIdle(d.device);
-    ImGui_ImplVulkan_Shutdown();
 }
 
 void Renderer::render()
@@ -284,8 +396,6 @@ void Renderer::render()
     d.nextFrameIndex %= d.perFrame.size();
 
     check_success(vkWaitForFences(d.device, 1, &perFrame.fence, VK_TRUE, UINT64_MAX));
-
-    ImGui_ImplVulkan_NewFrame();
 
     uint32_t imageIndex;
     const auto acquireResult = vkAcquireNextImageKHR(d.device, d.swapchain, UINT64_MAX, perFrame.imageAcquiredSemaphore, nullptr, &imageIndex);
@@ -474,7 +584,11 @@ void Renderer::record_command_buffer(const PerFrameData& perFrame, const PerImag
 
     check_success(vkBeginCommandBuffer(perFrame.commandBuffer, &commandBufferBeginInfo));
     vkCmdBeginRenderPass(perFrame.commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), perFrame.commandBuffer);
+
+    //vkCmdBindPipeline(perFrame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, d.uiPipeline);
+    vkCmdBindDescriptorSets(perFrame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, d.uiPipelineLayout, 0, 1, &d.uiDescriptorSet, 0, nullptr);
+    draw_ui(perFrame.commandBuffer);
+
     vkCmdEndRenderPass(perFrame.commandBuffer);
     check_success(vkEndCommandBuffer(perFrame.commandBuffer));
 }
