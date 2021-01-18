@@ -19,7 +19,7 @@ jobs:
         keys: AA8452080E383F7E
     
     - name: Install dependencies
-      run: sudo apt-get install --no-install-recommends libglfw3-dev vulkan-sdk
+      run: sudo apt-get install --no-install-recommends libglfw3-dev libglm-dev vulkan-sdk
 
     - uses: actions/checkout@v2
 

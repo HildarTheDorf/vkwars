@@ -3,4 +3,6 @@
 #endif
 
 #define VMA_IMPLEMENTATION
-#include <vk_mem_alloc.h>
+#define VMA_NULLABLE
+#define VMA_NOT_NULL
+#include "vk_mem_alloc.h"

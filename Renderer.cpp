@@ -1,320 +1,301 @@
 #include "Renderer.hpp"
 
-#include "Window.hpp"
+#include "RendererUtil.hpp"
+#include "Uploader.hpp"
 
-#include <algorithm>
-#include <stdexcept>
-
+constexpr auto DEPTH_FORMAT = vk::Format::eD16Unorm;
 constexpr uint32_t DESIRED_API_VERSION = VK_API_VERSION_1_2;
-constexpr auto DESIRED_DEPTH_FORMATS = std::array{ VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_X8_D24_UNORM_PACK32 };
-constexpr auto DESIRED_PRESENT_MODES = std::array{ VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR };
-constexpr uint32_t DESIRED_SWAPCHAIN_IMAGES = 3;
+constexpr auto DESIRED_COMPOSITE_ALPHA = std::array{ vk::CompositeAlphaFlagBitsKHR::eOpaque, vk::CompositeAlphaFlagBitsKHR::eInherit };
+constexpr auto DESIRED_PRESENT_MODES = std::array{ vk::PresentModeKHR::eMailbox, vk::PresentModeKHR::eFifoRelaxed, vk::PresentModeKHR::eFifo };
+constexpr uint32_t DEFAULT_IMAGE_COUNT = 3;
 
-constexpr void check_success(VkResult result)
+static constexpr uint32_t compute_image_count(uint32_t min, uint32_t max)
 {
-    if (result)
-    {
-        throw std::runtime_error("Bad VkResult");
-    }
-}
-
-constexpr uint32_t compute_image_count(uint32_t min, uint32_t max)
-{
-    uint32_t ret = std::max(min + 1, DESIRED_SWAPCHAIN_IMAGES);
+    const auto ret = std::max(DEFAULT_IMAGE_COUNT, min);
     return max ? std::min(ret, max) : ret;
 }
 
-static VkFormat select_depth_format(VkPhysicalDevice physicalDevice)
+static std::pair<vk::PhysicalDevice, uint32_t> select_device_and_queue(const std::vector<vk::PhysicalDevice>& physicalDevices, vk::SurfaceKHR surface)
 {
-    for (const auto desiredFormat : DESIRED_DEPTH_FORMATS)
-    {
-        VkFormatProperties formatProps;
-        vkGetPhysicalDeviceFormatProperties(physicalDevice, desiredFormat, &formatProps);
-        if (formatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
-        {
-            return desiredFormat;
-        }
-    }
-
-    throw std::runtime_error("No supported depth format");
-}
-
-static std::pair<VkPhysicalDevice, uint32_t> select_device_and_queue(VkInstance instance, VkSurfaceKHR surface)
-{
-    uint32_t numPhysicalDevices;
-    check_success(vkEnumeratePhysicalDevices(instance, &numPhysicalDevices, nullptr));
-    std::vector<VkPhysicalDevice> physicalDevices(numPhysicalDevices);
-    check_success(vkEnumeratePhysicalDevices(instance, &numPhysicalDevices, physicalDevices.data()));
-
     for (const auto physicalDevice : physicalDevices)
     {
-        uint32_t numQueueFamilies;
-        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &numQueueFamilies, nullptr);
-        std::vector<VkQueueFamilyProperties> queueFamilyProperties(numQueueFamilies);
-        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &numQueueFamilies, queueFamilyProperties.data());
-
-        for (uint32_t i = 0; i < numQueueFamilies; ++i)
+        const auto queueFamilies = physicalDevice.getQueueFamilyProperties();
+        for (uint32_t i = 0; i < queueFamilies.size(); ++i)
         {
-            if (queueFamilyProperties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+            if (queueFamilies[i].queueFlags & vk::QueueFlagBits::eGraphics && physicalDevice.getSurfaceSupportKHR(i, surface))
             {
-                VkBool32 supported;
-                check_success(vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, i, surface, &supported));
-                if (supported)
-                {
-                    return { physicalDevice, i };
-                }
+                return {physicalDevice, i};
             }
         }
     }
 
-    throw std::runtime_error("No supported Vulkan Device");
+    throw std::runtime_error("No supported vulkan device");
 }
 
-static VkPresentModeKHR select_present_mode(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
+static vk::CompositeAlphaFlagBitsKHR select_composite_alpha(vk::CompositeAlphaFlagsKHR compositeAlpha)
 {
-    uint32_t numPresentModes;
-    check_success(vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &numPresentModes, nullptr));
-    std::vector<VkPresentModeKHR> presentModes(numPresentModes);
-    check_success(vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &numPresentModes, presentModes.data()));
+    for (const auto needle : DESIRED_COMPOSITE_ALPHA)
+    {
+        if (compositeAlpha & needle)
+        {
+            return needle;
+        }
+    }
+    
+    throw std::runtime_error("No supported composite alpha");
+}
 
+template<typename T>
+vk::PresentModeKHR select_present_mode(const T begin, const T end)
+{
     for (const auto needle : DESIRED_PRESENT_MODES)
     {
-        if (std::find(presentModes.begin(), presentModes.end(), needle) != presentModes.end())
+        if (std::find(begin, end, needle) != end)
         {
             return needle;
         }
     }
 
-    // Unreachable, FIFO should always be supported
-    throw std::runtime_error("No supported present mode");
+    throw std::runtime_error("No supported vulkan present mode");
 }
 
-static VkCompositeAlphaFlagBitsKHR select_surface_alpha(VkCompositeAlphaFlagsKHR flags)
+template<typename T>
+constexpr vk::SurfaceFormatKHR select_surface_format(const T begin, const T end)
 {
-    if (flags & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
+    for (auto iter = begin; iter != end; ++iter)
     {
-        return VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    }
-    else if (flags & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR)
-    {
-        return VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
-    }
-    else
-    {
-        throw std::runtime_error("No supported composite alpha");
-    }
-}
-
-static VkSurfaceFormatKHR select_surface_format(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
-{
-    uint32_t numFormats;
-    check_success(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &numFormats, nullptr));
-    std::vector<VkSurfaceFormatKHR> formats(numFormats);
-    check_success(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &numFormats, formats.data()));
-
-    for (const auto& surfaceFormat : formats)
-    {
-        switch (surfaceFormat.format)
+        switch (iter->format)
         {
-        case VK_FORMAT_R8G8B8_SRGB:
-        case VK_FORMAT_R8G8B8A8_SRGB:
-        case VK_FORMAT_B8G8R8_SRGB:
-        case VK_FORMAT_B8G8R8A8_SRGB:
-        case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
-            return surfaceFormat;
-
+        case vk::Format::eR8G8B8A8Srgb:
+        case vk::Format::eB8G8R8A8Srgb:
+        case vk::Format::eA8B8G8R8SrgbPack32:
+            return *iter;
         default:
             break;
         }
     }
 
-    return formats[0];
-
+    return *begin;
 }
 
-Renderer::Renderer(Window& window)
+Renderer::Renderer(std::function<RequiredExtensionsCallback> requiredExtensionsCallback, std::function<SurfaceCreationCallback> surfaceCreationCallback)
+    :frameIndex(0)
 {
-    VkApplicationInfo applicationInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
-    applicationInfo.apiVersion = DESIRED_API_VERSION;
+    const auto applicationInfo = vk::ApplicationInfo()
+        .setApiVersion(DESIRED_API_VERSION);
+    auto instanceCreateInfo = vk::InstanceCreateInfo()
+        .setPApplicationInfo(&applicationInfo);
+    instanceCreateInfo.setPpEnabledExtensionNames(requiredExtensionsCallback(&instanceCreateInfo.enabledExtensionCount));
 
-    VkInstanceCreateInfo instanceCreateInfo = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
-    instanceCreateInfo.pApplicationInfo = &applicationInfo;
-    instanceCreateInfo.ppEnabledExtensionNames = window.get_required_vulkan_extensions(&instanceCreateInfo.enabledExtensionCount);
-    check_success(vkCreateInstance(&instanceCreateInfo, nullptr, &_d.instance));
+    instance = vk::createInstanceUnique(instanceCreateInfo);
 
-    check_success(window.create_vulkan_surface(_d.instance, &_d.surface));
+    VkSurfaceKHR rawSurface;
+    check_success(surfaceCreationCallback(instance.get(), nullptr, &rawSurface));
+    surface = vk::UniqueSurfaceKHR(rawSurface, instance.get());
 
-    std::tie(_d.physicalDevice, _d.queueFamilyIndex) = select_device_and_queue(_d.instance, _d.surface);
-    _d.surfaceFormat = select_surface_format(_d.physicalDevice, _d.surface);
-    _d.depthFormat = select_depth_format(_d.physicalDevice);
+    const auto physicalDevices = instance->enumeratePhysicalDevices();
+    std::tie(physicalDevice, queueFamilyIndex) = select_device_and_queue(physicalDevices, surface.get());
 
-    const float queuePriority = 0.0;
+    const auto queuePriorities = std::array{ 0.0f };
 
-    VkDeviceQueueCreateInfo queueCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
-    queueCreateInfo.queueFamilyIndex = _d.queueFamilyIndex;
-    queueCreateInfo.queueCount = 1;
-    queueCreateInfo.pQueuePriorities = &queuePriority;
+    const auto deviceExtensions = std::array{
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME
+    };
 
-    std::array<const char *, 1> deviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    const auto deviceQueueCreateInfos = std::array{
+        vk::DeviceQueueCreateInfo()
+            .setQueueFamilyIndex(queueFamilyIndex)
+            .setQueuePriorities(queuePriorities)
+    };
 
-    VkDeviceCreateInfo deviceCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
-    deviceCreateInfo.queueCreateInfoCount = 1;
-    deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
-    deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
-    deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions.data();
+    const auto deviceCreateInfo = vk::DeviceCreateInfo()
+        .setPEnabledExtensionNames(deviceExtensions)
+        .setQueueCreateInfos(deviceQueueCreateInfos);
 
-    check_success(vkCreateDevice(_d.physicalDevice, &deviceCreateInfo, nullptr, &_d.device));
-    vkGetDeviceQueue(_d.device, _d.queueFamilyIndex, 0, &_d.queue);
+    device = physicalDevice.createDeviceUnique(deviceCreateInfo);
+    queue = device->getQueue(queueFamilyIndex, 0);
 
-    VmaAllocatorCreateInfo allocatorCreateInfo = { };
-    allocatorCreateInfo.physicalDevice = _d.physicalDevice;
-    allocatorCreateInfo.device = _d.device;
-    allocatorCreateInfo.instance = _d.instance;
-    allocatorCreateInfo.vulkanApiVersion = DESIRED_API_VERSION;
+    check_success(allocator.init(instance.get(), physicalDevice, device.get(), DESIRED_API_VERSION));
 
-    check_success(vmaCreateAllocator(&allocatorCreateInfo, &_d.allocator));
+    const auto surfaceFormats = physicalDevice.getSurfaceFormatsKHR(surface.get());
+    surfaceFormat = select_surface_format(surfaceFormats.begin(), surfaceFormats.end());
 
-    std::array<VkAttachmentDescription, 2> attachmentDescs = { };
-    attachmentDescs[0].format = _d.surfaceFormat.format;
-    attachmentDescs[0].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachmentDescs[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachmentDescs[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachmentDescs[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachmentDescs[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    attachmentDescs[1].format = _d.depthFormat;
-    attachmentDescs[1].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachmentDescs[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachmentDescs[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachmentDescs[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachmentDescs[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    
-    VkAttachmentReference colorAttachmentRef = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
-    VkAttachmentReference depthAttachmentRef = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+    const auto renderPassAttachments = std::array{
+        vk::AttachmentDescription()
+            .setFormat(surfaceFormat.format)
+            .setSamples(vk::SampleCountFlagBits::e1)
+            .setLoadOp(vk::AttachmentLoadOp::eClear)
+            .setStoreOp(vk::AttachmentStoreOp::eStore)
+            .setInitialLayout(vk::ImageLayout::eUndefined)
+            .setFinalLayout(vk::ImageLayout::ePresentSrcKHR),
+        vk::AttachmentDescription()
+            .setFormat(DEPTH_FORMAT)
+            .setSamples(vk::SampleCountFlagBits::e1)
+            .setLoadOp(vk::AttachmentLoadOp::eClear)
+            .setStoreOp(vk::AttachmentStoreOp::eDontCare)
+            .setInitialLayout(vk::ImageLayout::eUndefined)
+            .setFinalLayout(vk::ImageLayout::eDepthStencilAttachmentOptimal)
+    };
 
-    VkSubpassDescription subpassDesc = { };
-    subpassDesc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpassDesc.colorAttachmentCount = 1;
-    subpassDesc.pColorAttachments = &colorAttachmentRef;
-    subpassDesc.pDepthStencilAttachment = &depthAttachmentRef;
+    const auto subpassColorAttachments = std::array{
+        vk::AttachmentReference()
+            .setAttachment(0)
+            .setLayout(vk::ImageLayout::eColorAttachmentOptimal)
+    };
 
-    std::array<VkSubpassDependency, 2> subpassDeps = { };
-    subpassDeps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-    subpassDeps[0].dstSubpass = 0;
-    subpassDeps[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    subpassDeps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    subpassDeps[0].srcAccessMask = 0;
-    subpassDeps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    subpassDeps[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
-    subpassDeps[1].srcSubpass = VK_SUBPASS_EXTERNAL;
-    subpassDeps[1].dstSubpass = 0;
-    subpassDeps[1].srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    subpassDeps[1].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    subpassDeps[1].srcAccessMask = 0;
-    subpassDeps[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    subpassDeps[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+    const auto depthStencilAttachment = vk::AttachmentReference()
+        .setAttachment(1)
+        .setLayout(vk::ImageLayout::eDepthStencilAttachmentOptimal);
 
-    VkRenderPassCreateInfo renderPassCreateInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
-    renderPassCreateInfo.attachmentCount = static_cast<uint32_t>(attachmentDescs.size());
-    renderPassCreateInfo.pAttachments = attachmentDescs.data();
-    renderPassCreateInfo.subpassCount = 1;
-    renderPassCreateInfo.pSubpasses = &subpassDesc;
-    renderPassCreateInfo.dependencyCount = static_cast<uint32_t>(subpassDeps.size());
-    renderPassCreateInfo.pDependencies = subpassDeps.data();
-    check_success(vkCreateRenderPass(_d.device, &renderPassCreateInfo, nullptr, &_d.renderPass));
+    const auto renderPassSubpasses = std::array{
+        vk::SubpassDescription()
+            .setPipelineBindPoint(vk::PipelineBindPoint::eGraphics)
+            .setColorAttachments(subpassColorAttachments)
+            .setPDepthStencilAttachment(&depthStencilAttachment),
+        vk::SubpassDescription()
+            .setPipelineBindPoint(vk::PipelineBindPoint::eGraphics)
+            .setColorAttachments(subpassColorAttachments)
+    };
 
-    for (auto& perFrame : _d.perFrame)
+    const auto renderPassDependencies = std::array{
+        vk::SubpassDependency()
+            .setSrcSubpass(VK_SUBPASS_EXTERNAL)
+            .setDstSubpass(0)
+            .setSrcStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
+            .setDstStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
+            .setDstAccessMask(vk::AccessFlagBits::eColorAttachmentWrite)
+            .setDependencyFlags(vk::DependencyFlagBits::eByRegion),
+        vk::SubpassDependency()
+            .setSrcSubpass(VK_SUBPASS_EXTERNAL)
+            .setDstSubpass(0)
+            .setSrcStageMask(vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests)
+            .setDstStageMask(vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests)
+            .setDstAccessMask(vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite)
+            .setDependencyFlags(vk::DependencyFlagBits::eByRegion),
+        vk::SubpassDependency()
+            .setSrcSubpass(0)
+            .setDstSubpass(1)
+            .setSrcStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
+            .setDstStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput)
+            .setSrcAccessMask(vk::AccessFlagBits::eColorAttachmentWrite)
+            .setDstAccessMask(vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite)
+            .setDependencyFlags(vk::DependencyFlagBits::eByRegion)
+    };
+
+    const auto renderPassCreateInfo = vk::RenderPassCreateInfo()
+        .setAttachments(renderPassAttachments)
+        .setSubpasses(renderPassSubpasses)
+        .setDependencies(renderPassDependencies);
+    renderPass = device->createRenderPassUnique(renderPassCreateInfo);
+
+    Uploader uploader(device.get(), queueFamilyIndex, 0, allocator);
+
+    uploader.begin();
+
+    uiRenderer.init(device.get(), allocator, uploader, renderPass.get(), 1);
+
+    uploader.end();
+
+    for (auto& perFrame : perFrameData)
     {
-        VkCommandPoolCreateInfo commandPoolCreateInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
-        commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-        commandPoolCreateInfo.queueFamilyIndex = _d.queueFamilyIndex;
-        check_success(vkCreateCommandPool(_d.device, &commandPoolCreateInfo, nullptr, &perFrame.commandPool));
+        const auto commandPoolCreateInfo = vk::CommandPoolCreateInfo()
+            .setFlags(vk::CommandPoolCreateFlagBits::eTransient)
+            .setQueueFamilyIndex(queueFamilyIndex);
+        perFrame.commandPool = device->createCommandPoolUnique(commandPoolCreateInfo);
 
-        VkCommandBufferAllocateInfo commandBufferAllocateInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-        commandBufferAllocateInfo.commandPool = perFrame.commandPool;
-        commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        commandBufferAllocateInfo.commandBufferCount = 1;
-        check_success(vkAllocateCommandBuffers(_d.device, &commandBufferAllocateInfo, &perFrame.commandBuffer));
+        const auto commandBufferAllocateInfo = vk::CommandBufferAllocateInfo()
+            .setCommandPool(perFrame.commandPool.get())
+            .setLevel(vk::CommandBufferLevel::ePrimary)
+            .setCommandBufferCount(1);
+        const auto commandBuffers = device->allocateCommandBuffers(commandBufferAllocateInfo);
+        perFrame.commandBuffer = commandBuffers[0];
 
-        VkFenceCreateInfo fenceCreateInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-        fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-        check_success(vkCreateFence(_d.device, &fenceCreateInfo, nullptr, &perFrame.fence));
+        const auto fenceCreateInfo = vk::FenceCreateInfo()
+            .setFlags(vk::FenceCreateFlagBits::eSignaled);
+        perFrame.fence = device->createFenceUnique(fenceCreateInfo);
 
-        VkSemaphoreCreateInfo semaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-        check_success(vkCreateSemaphore(_d.device, &semaphoreCreateInfo, nullptr, &perFrame.imageAcquiredSemaphore));
+        const auto semaphoreCreateInfo = vk::SemaphoreCreateInfo();
+        perFrame.semaphore = device->createSemaphoreUnique(semaphoreCreateInfo);
     }
 
     build_swapchain();
+
+    check_success(uploader.finish());
+}
+
+Renderer::~Renderer()
+{
+    wait_all_fences();
 }
 
 void Renderer::render()
 {
-    const auto& perFrame = _d.perFrame[_d.nextFrameIndex++];
-    _d.nextFrameIndex %= _d.perFrame.size();
+    const auto& perFrame = perFrameData[frameIndex++];
+    frameIndex %= perFrameData.size();
 
-    check_success(vkWaitForFences(_d.device, 1, &perFrame.fence, VK_TRUE, UINT64_MAX));
+    check_success(device->waitForFences(perFrame.fence.get(), true, UINT64_MAX));
 
     uint32_t imageIndex;
-    const auto acquireResult = vkAcquireNextImageKHR(_d.device, _d.swapchain, UINT64_MAX, perFrame.imageAcquiredSemaphore, nullptr, &imageIndex);
+    const auto imageIndexResult = device->acquireNextImageKHR(swapchain.get(), UINT64_MAX, perFrame.semaphore.get(), nullptr, &imageIndex);
 
     bool swapchainUsable, rebuildRequired;
-    switch (acquireResult)
+    switch (imageIndexResult)
     {
-    case VK_SUCCESS:
+    case vk::Result::eSuccess:
         swapchainUsable = true;
         rebuildRequired = false;
         break;
-    case VK_SUBOPTIMAL_KHR:
+    case vk::Result::eSuboptimalKHR:
         swapchainUsable = true;
         rebuildRequired = true;
         break;
-    case VK_ERROR_OUT_OF_DATE_KHR:
+    case vk::Result::eErrorOutOfDateKHR:
         swapchainUsable = false;
         rebuildRequired = true;
         break;
     default:
-        check_success(acquireResult);
-        // Unreachable
-        std::terminate();
+        vk::throwResultException(imageIndexResult, "render");
     }
     if (swapchainUsable)
     {
-        const auto& perImage = _d.perImage[imageIndex];
+        const auto& perImage = perImageData[imageIndex];
 
+        device->resetCommandPool(perFrame.commandPool.get());
         record_command_buffer(perFrame, perImage);
 
-        const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        const auto waitSemaphores = std::array{ perFrame.semaphore.get()};
+        const auto waitStages = std::array{ vk::PipelineStageFlags(vk::PipelineStageFlagBits::eColorAttachmentOutput) };
+        const auto commandBuffers = std::array{ perFrame.commandBuffer };
+        const auto renderCompleteSemaphores = std::array{ perImage.semaphore.get()};
 
-        VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-        submitInfo.waitSemaphoreCount = 1;
-        submitInfo.pWaitSemaphores = &perFrame.imageAcquiredSemaphore;
-        submitInfo.pWaitDstStageMask = &waitStage;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &perFrame.commandBuffer;
-        submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores = &perImage.renderCompleteSemaphore;
+        const auto submitInfo = vk::SubmitInfo()
+            .setWaitSemaphores(waitSemaphores)
+            .setWaitDstStageMask(waitStages)
+            .setCommandBuffers(commandBuffers)
+            .setSignalSemaphores(renderCompleteSemaphores);
 
-        check_success(vkResetFences(_d.device, 1, &perFrame.fence));
-        check_success(vkQueueSubmit(_d.queue, 1, &submitInfo, perFrame.fence));
+        device->resetFences(perFrame.fence.get());
+        queue.submit(submitInfo, perFrame.fence.get());
 
-        VkPresentInfoKHR presentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
-        presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores = &perImage.renderCompleteSemaphore;
-        presentInfo.swapchainCount = 1;
-        presentInfo.pSwapchains = &_d.swapchain;
-        presentInfo.pImageIndices = &imageIndex;
-        const auto presentResult = vkQueuePresentKHR(_d.queue, &presentInfo);
+        const auto imageIndices = std::array{ imageIndex };
+        const auto presentInfo = vk::PresentInfoKHR()
+            .setWaitSemaphores(renderCompleteSemaphores)
+            .setSwapchains(swapchain.get())
+            .setImageIndices(imageIndices);
+        // Passing a pointer (not a reference) here disables the
+        // enhanced version of this method which throws on OutOfDate
+        const auto presentResult = queue.presentKHR(&presentInfo);
+
         switch (presentResult)
         {
-        case VK_SUCCESS:
+        case vk::Result::eSuccess:
             break;
-        case VK_SUBOPTIMAL_KHR:
-        case VK_ERROR_OUT_OF_DATE_KHR:
+        case vk::Result::eSuboptimalKHR:
+        case vk::Result::eErrorOutOfDateKHR:
             rebuildRequired = true;
             break;
         default:
-            check_success(presentResult);
-            // Unreachable
-            std::terminate();
+            vk::throwResultException(presentResult, "render");
         }
     }
 
@@ -326,120 +307,126 @@ void Renderer::render()
 
 void Renderer::build_swapchain()
 {
-    VkSurfaceCapabilitiesKHR surfaceCaps;
-    check_success(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_d.physicalDevice, _d.surface, &surfaceCaps));
+    const auto surfaceCaps = physicalDevice.getSurfaceCapabilitiesKHR(surface.get());
+    const auto compositeAlpha = select_composite_alpha(surfaceCaps.supportedCompositeAlpha);
+    const auto minImageCount = compute_image_count(surfaceCaps.minImageCount, surfaceCaps.minImageCount);
+    swapchainExtent = surfaceCaps.currentExtent;
 
-    _d.swapchainSize = surfaceCaps.currentExtent;
+    const auto presentModes = physicalDevice.getSurfacePresentModesKHR(surface.get());
+    const auto presentMode = select_present_mode(presentModes.begin(), presentModes.end());
 
-    VkSwapchainCreateInfoKHR swapchainCreateInfo = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
-    swapchainCreateInfo.surface = _d.surface;
-    swapchainCreateInfo.minImageCount = compute_image_count(surfaceCaps.minImageCount, surfaceCaps.maxImageCount);
-    swapchainCreateInfo.imageFormat = _d.surfaceFormat.format;
-    swapchainCreateInfo.imageColorSpace = _d.surfaceFormat.colorSpace;
-    swapchainCreateInfo.imageExtent = _d.swapchainSize;
-    swapchainCreateInfo.imageArrayLayers = 1;
-    swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    swapchainCreateInfo.preTransform = surfaceCaps.currentTransform;
-    swapchainCreateInfo.compositeAlpha = select_surface_alpha(surfaceCaps.supportedCompositeAlpha);
-    swapchainCreateInfo.presentMode = select_present_mode(_d.physicalDevice, _d.surface);
-    swapchainCreateInfo.clipped = VK_TRUE;
-    swapchainCreateInfo.oldSwapchain = _d.oldSwapchain;
-    check_success(vkCreateSwapchainKHR(_d.device, &swapchainCreateInfo, nullptr, &_d.swapchain));
+    const auto swapchainCreateInfo = vk::SwapchainCreateInfoKHR()
+        .setSurface(surface.get())
+        .setMinImageCount(minImageCount)
+        .setImageFormat(surfaceFormat.format)
+        .setImageColorSpace(surfaceFormat.colorSpace)
+        .setImageExtent(swapchainExtent)
+        .setImageArrayLayers(1)
+        .setImageUsage(vk::ImageUsageFlagBits::eColorAttachment)
+        .setPreTransform(surfaceCaps.currentTransform)
+        .setCompositeAlpha(compositeAlpha)
+        .setPresentMode(presentMode)
+        .setClipped(true)
+        .setOldSwapchain(oldSwapchain.get());
 
-    VkImageCreateInfo depthImageCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-    depthImageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
-    depthImageCreateInfo.format = _d.depthFormat;
-    depthImageCreateInfo.extent = { _d.swapchainSize.width, _d.swapchainSize.height, 1 };
-    depthImageCreateInfo.mipLevels = 1;
-    depthImageCreateInfo.arrayLayers = 1;
-    depthImageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    depthImageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    depthImageCreateInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+    swapchain = device->createSwapchainKHRUnique(swapchainCreateInfo);
+    const auto swapchainImages = device->getSwapchainImagesKHR(swapchain.get());
 
-    VmaAllocationCreateInfo depthImageAllocationInfo = { };
-    depthImageAllocationInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    const auto depthImageCreateInfo = vk::ImageCreateInfo()
+        .setImageType(vk::ImageType::e2D)
+        .setFormat(DEPTH_FORMAT)
+        .setExtent({swapchainExtent.width, swapchainExtent.height, 1})
+        .setMipLevels(1)
+        .setArrayLayers(1)
+        .setSamples(vk::SampleCountFlagBits::e1)
+        .setTiling(vk::ImageTiling::eOptimal)
+        .setUsage(vk::ImageUsageFlagBits::eDepthStencilAttachment);
 
-    check_success(vmaCreateImage(_d.allocator, &depthImageCreateInfo, &depthImageAllocationInfo, &_d.depthImage, &_d.depthMemory, nullptr));
+    std::tie(depthImage, depthMemory) = allocator.createImage(depthImageCreateInfo, VMA_MEMORY_USAGE_GPU_ONLY);
 
-    VkImageViewCreateInfo depthImageViewCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-    depthImageViewCreateInfo.image = _d.depthImage;
-    depthImageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    depthImageViewCreateInfo.format = _d.depthFormat;
-    depthImageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    depthImageViewCreateInfo.subresourceRange.layerCount = 1;
-    depthImageViewCreateInfo.subresourceRange.levelCount = 1;
-    check_success(vkCreateImageView(_d.device, &depthImageViewCreateInfo, nullptr, &_d.depthImageView));
+    const auto depthImageViewCreateInfo = vk::ImageViewCreateInfo()
+        .setImage(depthImage.get())
+        .setViewType(vk::ImageViewType::e2D)
+        .setFormat(DEPTH_FORMAT)
+        .setSubresourceRange({ vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1 });
+    depthImageView = device->createImageViewUnique(depthImageViewCreateInfo);
 
-    uint32_t numSwapchainImages;
-    check_success(vkGetSwapchainImagesKHR(_d.device, _d.swapchain, &numSwapchainImages, nullptr));
-    std::vector<VkImage> swapchainImages(numSwapchainImages);
-    check_success(vkGetSwapchainImagesKHR(_d.device, _d.swapchain, &numSwapchainImages, swapchainImages.data()));
-
-    _d.perImage.resize(numSwapchainImages);
-    for (uint32_t i = 0; i < numSwapchainImages; ++i)
+    perImageData.resize(swapchainImages.size());
+    for (uint32_t i = 0; i < swapchainImages.size(); ++i)
     {
-        auto& perImage = _d.perImage[i];
+        auto& perImage = perImageData[i];
 
-        VkImageViewCreateInfo imageViewCreateInfo = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-        imageViewCreateInfo.image = swapchainImages[i];
-        imageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        imageViewCreateInfo.format = _d.surfaceFormat.format;
-        imageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        imageViewCreateInfo.subresourceRange.layerCount = 1;
-        imageViewCreateInfo.subresourceRange.levelCount = 1;
-        check_success(vkCreateImageView(_d.device, &imageViewCreateInfo, nullptr, &perImage.imageView));
+        const auto imageViewCreateInfo = vk::ImageViewCreateInfo()
+            .setImage(swapchainImages[i])
+            .setViewType(vk::ImageViewType::e2D)
+            .setFormat(surfaceFormat.format)
+            .setSubresourceRange({ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 });
+        perImage.imageView = device->createImageViewUnique(imageViewCreateInfo);
 
-        std::array<VkImageView, 2> attachments = {};
-        attachments[0] = perImage.imageView;
-        attachments[1] = _d.depthImageView;
+        const auto framebufferAttachments = std::array{ perImage.imageView.get(), depthImageView.get() };
 
-        VkFramebufferCreateInfo framebufferCreateInfo = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-        framebufferCreateInfo.renderPass = _d.renderPass;
-        framebufferCreateInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-        framebufferCreateInfo.pAttachments = attachments.data();
-        framebufferCreateInfo.width = _d.swapchainSize.width;
-        framebufferCreateInfo.height = _d.swapchainSize.height;
-        framebufferCreateInfo.layers = 1;
-        check_success(vkCreateFramebuffer(_d.device, &framebufferCreateInfo, nullptr, &perImage.framebuffer));
+        const auto framebufferCreateInfo = vk::FramebufferCreateInfo()
+            .setRenderPass(renderPass.get())
+            .setAttachments(framebufferAttachments)
+            .setWidth(swapchainExtent.width)
+            .setHeight(swapchainExtent.height)
+            .setLayers(1);
+        perImage.framebuffer = device->createFramebufferUnique(framebufferCreateInfo);
 
-        VkSemaphoreCreateInfo semaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-        check_success(vkCreateSemaphore(_d.device, &semaphoreCreateInfo, nullptr, &perImage.renderCompleteSemaphore));
+        const auto semaphoreCreateInfo = vk::SemaphoreCreateInfo();
+        perImage.semaphore = device->createSemaphoreUnique(semaphoreCreateInfo);
     }
 }
 
 void Renderer::rebuild_swapchain()
 {
-    std::array<VkFence, MAX_FRAMES_IN_FLIGHT> allFences;
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
-    {
-        allFences[i] = _d.perFrame[i].fence;
-    }
-    check_success(vkWaitForFences(_d.device, static_cast<uint32_t>(allFences.size()), allFences.data(), true, UINT64_MAX));
-
-    destroy_swapchain();
+    wait_all_fences();
+    oldSwapchain = std::move(swapchain);
     build_swapchain();
 }
 
 void Renderer::record_command_buffer(const PerFrameData& perFrame, const PerImageData& perImage)
 {
-    check_success(vkResetCommandPool(_d.device, perFrame.commandPool, 0));
+    const auto cb = perFrame.commandBuffer;
 
-    VkCommandBufferBeginInfo commandBufferBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-    commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    const auto cbBeginInfo = vk::CommandBufferBeginInfo()
+        .setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
 
-    std::array<VkClearValue, 2> clearValues = { };
-    clearValues[0].color.float32[3] = 1.0f;
-    clearValues[1].depthStencil.depth = 1.0f;
+    const auto clearValues = std::array{
+        vk::ClearValue(std::array{0.0f, 0.0f, 0.0f, 1.0f}),
+        vk::ClearValue(vk::ClearDepthStencilValue(1.0f))
+    };
 
-    VkRenderPassBeginInfo renderPassBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-    renderPassBeginInfo.renderPass = _d.renderPass;
-    renderPassBeginInfo.renderArea = { {}, _d.swapchainSize };
-    renderPassBeginInfo.framebuffer = perImage.framebuffer;
-    renderPassBeginInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-    renderPassBeginInfo.pClearValues = clearValues.data();
+    const auto rpBeginInfo = vk::RenderPassBeginInfo()
+        .setRenderPass(renderPass.get())
+        .setFramebuffer(perImage.framebuffer.get())
+        .setRenderArea({{}, swapchainExtent})
+        .setClearValues(clearValues);
 
-    check_success(vkBeginCommandBuffer(perFrame.commandBuffer, &commandBufferBeginInfo));
-    vkCmdBeginRenderPass(perFrame.commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdEndRenderPass(perFrame.commandBuffer);
-    check_success(vkEndCommandBuffer(perFrame.commandBuffer));
+    const auto viewport = vk::Viewport{
+        0.0f, 0.0f,
+        static_cast<float>(swapchainExtent.width), static_cast<float>(swapchainExtent.height),
+        0.0f, 1.0
+    };
+
+    cb.begin(cbBeginInfo);
+    cb.beginRenderPass(rpBeginInfo, vk::SubpassContents::eInline);
+    cb.setViewport(0, viewport);
+
+    cb.nextSubpass(vk::SubpassContents::eInline);
+
+    uiRenderer.render(cb, swapchainExtent);
+
+    cb.endRenderPass();
+    cb.end();
+}
+
+void Renderer::wait_all_fences() const
+{
+    std::vector<vk::Fence> allFences;
+    for (const auto& perFrame : perFrameData)
+    {
+        allFences.emplace_back(perFrame.fence.get());
+    }
+    check_success(device->waitForFences(allFences, true, UINT64_MAX));
 }
