@@ -77,7 +77,8 @@ void UIRenderer::init(vk::Device device, vma::Allocator& allocator, Uploader& up
 
     const auto samplerCreateInfo = vk::SamplerCreateInfo()
         .setMagFilter(vk::Filter::eLinear)
-        .setMinFilter(vk::Filter::eLinear);
+        .setMinFilter(vk::Filter::eLinear)
+        .setMaxLod(VK_LOD_CLAMP_NONE);
     sampler = device.createSamplerUnique(samplerCreateInfo);
 
     const auto immutableSamplers = std::array{ sampler.get() };
