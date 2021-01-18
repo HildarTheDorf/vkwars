@@ -9,6 +9,7 @@ FetchContent_MakeAvailable(imgui)
 add_subdirectory(shaders)
 
 add_library(imgui ${imgui_SOURCE_DIR}/imgui.cpp ${imgui_SOURCE_DIR}/imgui_demo.cpp ${imgui_SOURCE_DIR}/imgui_draw.cpp ${imgui_SOURCE_DIR}/imgui_widgets.cpp ${imgui_SOURCE_DIR}/examples/imgui_impl_glfw.cpp)
+target_compile_definitions(imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
 target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR})
 
 add_executable(vkwars main.cpp Renderer.cpp UIRenderer.cpp Uploader.cpp vma/Allocation.cpp vma/Allocator.cpp vma/vk_mem_alloc.cpp)
