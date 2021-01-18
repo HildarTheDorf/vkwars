@@ -32,7 +32,7 @@ static std::pair<vk::PhysicalDevice, uint32_t> select_device_and_queue(const std
     throw std::runtime_error("No supported vulkan device");
 }
 
-static constexpr vk::CompositeAlphaFlagBitsKHR select_composite_alpha(vk::CompositeAlphaFlagsKHR compositeAlpha)
+static vk::CompositeAlphaFlagBitsKHR select_composite_alpha(vk::CompositeAlphaFlagsKHR compositeAlpha)
 {
     for (const auto needle : DESIRED_COMPOSITE_ALPHA)
     {
@@ -46,7 +46,7 @@ static constexpr vk::CompositeAlphaFlagBitsKHR select_composite_alpha(vk::Compos
 }
 
 template<typename T>
-constexpr vk::PresentModeKHR select_present_mode(const T begin, const T end)
+vk::PresentModeKHR select_present_mode(const T begin, const T end)
 {
     for (const auto needle : DESIRED_PRESENT_MODES)
     {
