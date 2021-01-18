@@ -1,47 +1,36 @@
 #include "Uploader.hpp"
 
-#include "BadVkResult.hpp"
+#include "RendererUtil.hpp"
 
-#include <cstring>
-#include <stdexcept>
-
-constexpr VkDeviceSize STAGING_BUFFER_ALIGNMENT = 4;
 constexpr VkDeviceSize STAGING_BUFFER_SIZE = 1 << 20;
 
-Uploader::Uploader(VkDevice device, VkQueue queue, VmaAllocator allocator, uint32_t queueFamilyIndex)
-    :_queue(queue), _finishRequired(false)
+Uploader::Uploader(vk::Device device, uint32_t queueFamilyIndex, uint32_t queueIndex, vma::Allocator& allocator)
+    :device(device), queue(device.getQueue(queueFamilyIndex, queueIndex)), currentOffset(0), uploadInProgress(false)
 {
-    r.device = device;
-    r.allocator = allocator;
+    const auto stagingBufferCreateInfo = vk::BufferCreateInfo()
+        .setSize(STAGING_BUFFER_SIZE)
+        .setUsage(vk::BufferUsageFlagBits::eTransferSrc);
+    std::tie(stagingBuffer, stagingMemory) = allocator.createBuffer(stagingBufferCreateInfo, VMA_MEMORY_USAGE_CPU_ONLY, VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
 
-    VkCommandPoolCreateInfo commandPoolCreateInfo = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
-    commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    commandPoolCreateInfo.queueFamilyIndex = queueFamilyIndex;
-    check_success(vkCreateCommandPool(r.device, &commandPoolCreateInfo, nullptr, &d.commandPool));
+    const auto commandPoolCreateInfo = vk::CommandPoolCreateInfo()
+        .setFlags(vk::CommandPoolCreateFlagBits::eTransient)
+        .setQueueFamilyIndex(queueFamilyIndex);
+    commandPool = device.createCommandPoolUnique(commandPoolCreateInfo);
 
-    VkCommandBufferAllocateInfo commandBufferAllocateInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-    commandBufferAllocateInfo.commandPool = d.commandPool;
-    commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    commandBufferAllocateInfo.commandBufferCount = 1;
-    check_success(vkAllocateCommandBuffers(r.device, &commandBufferAllocateInfo, &d.commandBuffer));
+    const auto commandBufferAllocateInfo = vk::CommandBufferAllocateInfo()
+        .setCommandPool(commandPool.get())
+        .setCommandBufferCount(1)
+        .setLevel(vk::CommandBufferLevel::ePrimary);
+    const auto commandBuffers = device.allocateCommandBuffers(commandBufferAllocateInfo);
+    commandBuffer = commandBuffers[0];
 
-    VkFenceCreateInfo fenceCreateInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-    check_success(vkCreateFence(r.device, &fenceCreateInfo, nullptr, &d.fence));
-
-    VkBufferCreateInfo bufferCreateInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-    bufferCreateInfo.size = STAGING_BUFFER_SIZE;
-    bufferCreateInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-
-    VmaAllocationCreateInfo bufferAllocationInfo = {};
-    bufferAllocationInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-    bufferAllocationInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
-
-    check_success(vmaCreateBuffer(r.allocator, &bufferCreateInfo, &bufferAllocationInfo, &d.stagingBuffer, &d.stagingAllocation, nullptr));
+    const auto fenceCreateInfo = vk::FenceCreateInfo();
+    fence = device.createFenceUnique(fenceCreateInfo);
 }
 
 Uploader::~Uploader()
 {
-    if (_finishRequired)
+    if (uploadInProgress)
     {
         static_cast<void>(finish());
     }
@@ -49,110 +38,91 @@ Uploader::~Uploader()
 
 void Uploader::begin()
 {
-    check_success(vmaMapMemory(r.allocator, d.stagingAllocation, &_pData));
-    _currentOffset = 0;
-
-    VkCommandBufferBeginInfo commandBufferBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-    commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    check_success(vkBeginCommandBuffer(d.commandBuffer, &commandBufferBeginInfo));
+    const auto stagingCommandBufferBeginInfo = vk::CommandBufferBeginInfo()
+        .setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+    commandBuffer.begin(stagingCommandBufferBeginInfo);
 }
 
 void Uploader::end()
 {
-    check_success(vkEndCommandBuffer(d.commandBuffer));
-    vmaUnmapMemory(r.allocator, d.stagingAllocation);
+    commandBuffer.end();
 
-    VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &d.commandBuffer;
-    check_success(vkQueueSubmit(_queue, 1, &submitInfo, d.fence));
-    _finishRequired = true;
+    const auto commandBuffers = std::array{ commandBuffer };
+
+    const auto stagingSubmitInfo = vk::SubmitInfo()
+        .setCommandBuffers(commandBuffers);
+
+    queue.submit(stagingSubmitInfo, fence.get());
+    uploadInProgress = true;
 }
 
-VkResult Uploader::finish()
+vk::Result Uploader::finish()
 {
-    _finishRequired = false;
-    return vkWaitForFences(r.device, 1, &d.fence, true, UINT64_MAX);
+    uploadInProgress = false;
+    return device.waitForFences(fence.get(), true, UINT64_MAX);
 }
 
-void Uploader::upload(VkBuffer destinationBuffer, VkDeviceSize offset, VkDeviceSize size, const void *pSrc)
+void Uploader::clearImage(vk::Image image, vk::ImageSubresourceRange subresourceRange, vk::ClearColorValue clearColor, vk::ImageLayout newLayout, vk::AccessFlags newAccess, vk::PipelineStageFlags newStage)
 {
-    if (_currentOffset + size > STAGING_BUFFER_SIZE)
+    auto imageBarrier = vk::ImageMemoryBarrier()
+        .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+        .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+        .setImage(image)
+        .setSubresourceRange(subresourceRange);
+
+    imageBarrier.setSrcAccessMask(vk::AccessFlags());
+    imageBarrier.setDstAccessMask(vk::AccessFlagBits::eTransferWrite);
+    imageBarrier.setOldLayout(vk::ImageLayout::eUndefined);
+    imageBarrier.setNewLayout(vk::ImageLayout::eTransferDstOptimal);
+    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags(), nullptr, nullptr, imageBarrier);
+
+    commandBuffer.clearColorImage(image, vk::ImageLayout::eTransferDstOptimal, clearColor, subresourceRange);
+
+    imageBarrier.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite);
+    imageBarrier.setDstAccessMask(newAccess);
+    imageBarrier.setOldLayout(vk::ImageLayout::eTransferDstOptimal);
+    imageBarrier.setNewLayout(newLayout);
+    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, newStage, vk::DependencyFlags(), nullptr, nullptr, imageBarrier);
+}
+
+void Uploader::uploadImage(vk::Image image, vk::ImageSubresourceLayers subresourceLayers, vk::Extent3D imageExtent, void *pData, vk::ImageLayout newLayout, vk::AccessFlags newAccess, vk::PipelineStageFlags newStage)
+{
+    const auto size = 4 * imageExtent.width * imageExtent.height * imageExtent.depth; // TODO: Support formats with sizes other than 4-bytes
+    if (currentOffset + size > STAGING_BUFFER_SIZE)
     {
-        throw std::runtime_error("Staging buffer out of memory");
+        vk::throwResultException(vk::Result::eErrorOutOfDeviceMemory, "Uploader::uploadImage");
     }
 
-    const auto pDst = reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(_pData) + _currentOffset);
-    memcpy(pDst, pSrc, size);
+    check_success(stagingMemory.withMap([pData, size](void *pStaging) {
+        memcpy(pStaging, pData, size);
+    }, currentOffset));
 
-    VkBufferCopy bufferCopy = { _currentOffset, offset, size };
-    vkCmdCopyBuffer(d.commandBuffer, d.stagingBuffer, destinationBuffer, 1, &bufferCopy);
+    auto imageBarrier = vk::ImageMemoryBarrier()
+        .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+        .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+        .setImage(image)
+        .setSubresourceRange({subresourceLayers.aspectMask, subresourceLayers.mipLevel, 1, subresourceLayers.baseArrayLayer, subresourceLayers.layerCount});
 
-    update_offset(size);
-}
+    imageBarrier.setSrcAccessMask(vk::AccessFlags());
+    imageBarrier.setDstAccessMask(vk::AccessFlagBits::eTransferWrite);
+    imageBarrier.setOldLayout(vk::ImageLayout::eUndefined);
+    imageBarrier.setNewLayout(vk::ImageLayout::eTransferDstOptimal);
+    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags(), nullptr, nullptr, imageBarrier);
 
-void Uploader::upload(VkImage destinationImage, const VkImageSubresourceLayers& subresource, VkExtent3D extent, uint8_t formatSize, const void *pSrc, VkPipelineStageFlags newStageMask, VkImageLayout newLayout, VkAccessFlags newAccess)
-{
-    const auto size = extent.width * extent.height * extent.depth * formatSize;
-    if (_currentOffset + size > STAGING_BUFFER_SIZE)
-    {
-        throw std::runtime_error("Staging buffer out of memory");
-    }
+    const auto copyRegion = vk::BufferImageCopy()
+        .setBufferOffset(currentOffset)
+        .setBufferRowLength(0)
+        .setBufferImageHeight(0)
+        .setImageSubresource(subresourceLayers)
+        .setImageOffset({})
+        .setImageExtent(imageExtent);
+    commandBuffer.copyBufferToImage(stagingBuffer.get(), image, vk::ImageLayout::eTransferDstOptimal, copyRegion);
 
-    const auto pDst = reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(_pData) + _currentOffset);
-    memcpy(pDst, pSrc, size);
+    imageBarrier.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite);
+    imageBarrier.setDstAccessMask(newAccess);
+    imageBarrier.setOldLayout(vk::ImageLayout::eTransferDstOptimal);
+    imageBarrier.setNewLayout(newLayout);
+    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, newStage, vk::DependencyFlags(), nullptr, nullptr, imageBarrier);
 
-    VkImageMemoryBarrier imageMemoryBarrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-    imageMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    imageMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    imageMemoryBarrier.image = destinationImage;
-    imageMemoryBarrier.subresourceRange.aspectMask = subresource.aspectMask;
-    imageMemoryBarrier.subresourceRange.baseMipLevel = subresource.mipLevel;
-    imageMemoryBarrier.subresourceRange.levelCount = 1;
-    imageMemoryBarrier.subresourceRange.baseArrayLayer = subresource.baseArrayLayer;
-    imageMemoryBarrier.subresourceRange.layerCount = subresource.layerCount;
-
-    imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageMemoryBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    imageMemoryBarrier.srcAccessMask = 0;
-    imageMemoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier(d.commandBuffer,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-        0,
-        0, nullptr,
-        0, nullptr,
-        1, &imageMemoryBarrier);
-
-    VkBufferImageCopy bufferImageCopy;
-    bufferImageCopy.bufferOffset = _currentOffset;
-    bufferImageCopy.bufferRowLength = 0;
-    bufferImageCopy.bufferImageHeight = 0;
-    bufferImageCopy.imageSubresource = subresource;
-    bufferImageCopy.imageOffset = { };
-    bufferImageCopy.imageExtent = extent;
-    vkCmdCopyBufferToImage(d.commandBuffer, d.stagingBuffer, destinationImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bufferImageCopy);
-
-    imageMemoryBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    imageMemoryBarrier.newLayout = newLayout;
-    imageMemoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    imageMemoryBarrier.dstAccessMask = newAccess;
-    vkCmdPipelineBarrier(d.commandBuffer,
-        VK_PIPELINE_STAGE_TRANSFER_BIT, newStageMask,
-        0,
-        0, nullptr,
-        0, nullptr,
-        1, &imageMemoryBarrier);
-
-    update_offset(size);
-}
-
-void Uploader::update_offset(VkDeviceSize size)
-{
-    const auto alignment = size % STAGING_BUFFER_ALIGNMENT;
-    if (alignment)
-    {
-        size += STAGING_BUFFER_ALIGNMENT - alignment;
-    }
-
-    _currentOffset += size;
+    currentOffset += size;
 }

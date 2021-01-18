@@ -1,36 +1,49 @@
 #include "Renderer.hpp"
-#include "Window.hpp"
+
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
 
 #include "imgui.h"
+#include "imgui_impl_glfw.h"
 
-static void render_ui()
+struct GlfwDeleter
 {
-    ImGui::NewFrame();
-
-    ImGui::ShowDemoWindow();
-    ImGui::ShowMetricsWindow();
-
-    ImGui::Begin("Test");
-    ImGui::LabelText("Example", "%d", 255);
-    ImGui::End();
-
-    ImGui::Render();
-}
+    void operator()(GLFWwindow *window)
+    {
+        glfwDestroyWindow(window);
+    }
+};
 
 int main()
 {
-    IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    ImGui::GetIO().FontGlobalScale *= 2;
 
-    Window window;
-    Renderer renderer(window);
+    glfwInit();
 
-    do
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
+    const auto window = std::unique_ptr<GLFWwindow, GlfwDeleter>(glfwCreateWindow(800, 600, "vkwars", nullptr, nullptr));
+
+    ImGui_ImplGlfw_InitForVulkan(window.get(), true);
+
+    Renderer renderer(glfwGetRequiredInstanceExtensions, [&window](VkInstance instance, VkAllocationCallbacks *allocator, VkSurfaceKHR *pSurface){
+        return glfwCreateWindowSurface(instance, window.get(), allocator, pSurface);
+    });
+
+    while (!glfwWindowShouldClose(window.get()))
     {
-        window.poll_events();
-        render_ui();
-        renderer.render();
-    } while (!window.is_closed());
+        glfwPollEvents();
+        ImGui_ImplGlfw_NewFrame();
 
+        ImGui::NewFrame();
+        ImGui::ShowDemoWindow();
+        ImGui::ShowMetricsWindow();
+        ImGui::Render();
+
+        renderer.render();
+    }
+
+    ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 }
