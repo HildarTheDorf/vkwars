@@ -49,7 +49,7 @@ static vk::UniqueShaderModule load_shader(vk::Device device, std::filesystem::pa
 
 void UIRenderer::init(vk::Device device, vma::Allocator& allocator, Uploader& uploader, vk::RenderPass renderPass, uint32_t subpass)
 {
-    auto io = ImGui::GetIO();
+    auto& io = ImGui::GetIO();
 
     io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
 
@@ -311,8 +311,5 @@ void UIRenderer::render(vk::CommandBuffer commandBuffer, vk::Extent2D framebuffe
             commandBuffer.setScissor(0, scissor);
             commandBuffer.drawIndexed(drawCommand.ElemCount, 1, baseIdx + drawCommand.IdxOffset, baseVtx + drawCommand.VtxOffset, 0);
         }
-
-        baseIdx += pCL->IdxBuffer.Size;
-        baseVtx += pCL->VtxBuffer.Size;
     }
 }
