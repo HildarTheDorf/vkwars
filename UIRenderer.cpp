@@ -49,9 +49,13 @@ static vk::UniqueShaderModule load_shader(vk::Device device, std::filesystem::pa
 
 void UIRenderer::init(vk::Device device, vma::Allocator& allocator, Uploader& uploader, vk::RenderPass renderPass, uint32_t subpass)
 {
+    auto io = ImGui::GetIO();
+
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
+
     int texWidth, texHeight;
     unsigned char *pTexPixels;
-    ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pTexPixels, &texWidth, &texHeight);
+    io.Fonts->GetTexDataAsRGBA32(&pTexPixels, &texWidth, &texHeight);
 
     const auto texExtent = vk::Extent3D{static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), 1};
 
