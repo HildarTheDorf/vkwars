@@ -10,8 +10,8 @@
 #include <fstream>
 #include <iterator>
 
-constexpr VkDeviceSize INDEX_BUFFER_SIZE = 1 << 20;
-constexpr VkDeviceSize VERTEX_BUFFER_SIZE = 1 << 20;
+constexpr VkDeviceSize INDEX_BUFFER_SIZE = 1 << 21;
+constexpr VkDeviceSize VERTEX_BUFFER_SIZE = 1 << 25;
 
 struct PushConstants
 {
@@ -311,5 +311,8 @@ void UIRenderer::render(vk::CommandBuffer commandBuffer, vk::Extent2D framebuffe
             commandBuffer.setScissor(0, scissor);
             commandBuffer.drawIndexed(drawCommand.ElemCount, 1, baseIdx + drawCommand.IdxOffset, baseVtx + drawCommand.VtxOffset, 0);
         }
+
+        baseIdx += pCL->IdxBuffer.Size;
+        baseVtx += pCL->VtxBuffer.Size;
     }
 }
