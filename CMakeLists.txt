@@ -11,7 +11,7 @@ add_subdirectory(shaders)
 add_library(imgui ${imgui_SOURCE_DIR}/imgui.cpp ${imgui_SOURCE_DIR}/imgui_demo.cpp ${imgui_SOURCE_DIR}/imgui_draw.cpp ${imgui_SOURCE_DIR}/imgui_widgets.cpp ${imgui_SOURCE_DIR}/examples/imgui_impl_glfw.cpp)
 target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR})
 
-add_executable(vkwars main.cpp Renderer.cpp UIRenderer.cpp Uploader.cpp vma/Allocation.cpp vma/Allocator.cpp vma/vk_mem_alloc.cpp)
+add_executable(vkwars main.cpp Renderer.cpp UIRenderer.cpp Uploader.cpp Window.cpp vma/Allocation.cpp vma/Allocator.cpp vma/vk_mem_alloc.cpp)
 add_dependencies(vkwars vkwars_shaders)
 set_target_properties(vkwars PROPERTIES CXX_STANDARD 17)
 target_include_directories(vkwars PRIVATE ${imgui_SOURCE_DIR}/examples)
