@@ -10,8 +10,8 @@
 #include <fstream>
 #include <iterator>
 
-constexpr VkDeviceSize INDEX_BUFFER_SIZE = 1 << 21;
-constexpr VkDeviceSize VERTEX_BUFFER_SIZE = 1 << 25;
+constexpr VkDeviceSize DEFAULT_INDEX_BUFFER_SIZE = 1 << 20;
+constexpr VkDeviceSize DEFAULT_VERTEX_BUFFER_SIZE = 1 << 20;
 
 struct PushConstants
 {
@@ -47,8 +47,16 @@ static vk::UniqueShaderModule load_shader(vk::Device device, std::filesystem::pa
     return device.createShaderModuleUnique(shaderModuleCreateInfo);
 }
 
+UIRenderer::UIRenderer()
+    :indexMemorySize(DEFAULT_INDEX_BUFFER_SIZE), vertexMemorySize(DEFAULT_VERTEX_BUFFER_SIZE)
+{
+
+}
+
 void UIRenderer::init(vk::Device device, vma::Allocator& allocator, Uploader& uploader, vk::RenderPass renderPass, uint32_t subpass)
 {
+    pAllocator = &allocator;
+
     auto& io = ImGui::GetIO();
 
     io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
@@ -151,15 +159,8 @@ void UIRenderer::init(vk::Device device, vma::Allocator& allocator, Uploader& up
 
     device.updateDescriptorSets(descriptorWrites, nullptr);
 
-    const auto indexBufferCreateInfo = vk::BufferCreateInfo()
-        .setSize(INDEX_BUFFER_SIZE)
-        .setUsage(vk::BufferUsageFlagBits::eIndexBuffer);
-    std::tie(indexBuffer, indexMemory) = allocator.createBuffer(indexBufferCreateInfo, VMA_MEMORY_USAGE_CPU_TO_GPU);
-
-    const auto vertexBufferCreateInfo = vk::BufferCreateInfo()
-        .setSize(VERTEX_BUFFER_SIZE)
-        .setUsage(vk::BufferUsageFlagBits::eVertexBuffer);
-    std::tie(vertexBuffer, vertexMemory) = allocator.createBuffer(vertexBufferCreateInfo, VMA_MEMORY_USAGE_CPU_TO_GPU);
+    std::tie(indexBuffer, indexMemory) = allocate_buffer(indexMemorySize, vk::BufferUsageFlagBits::eIndexBuffer);
+    std::tie(vertexBuffer, vertexMemory) = allocate_buffer(vertexMemorySize, vk::BufferUsageFlagBits::eVertexBuffer);
 
     const auto fragmentShader = load_shader(device, "main.frag");
     const auto vertexShader = load_shader(device, "main.vert");
@@ -252,16 +253,43 @@ void UIRenderer::init(vk::Device device, vma::Allocator& allocator, Uploader& up
     graphicsPipeline = check_success(device.createGraphicsPipelineUnique(nullptr, pipelineCreateInfo)); // TODO: PipelineCache
 }
 
+static void for_each_cmd_list(ImDrawData *pDD, std::function<void(ImDrawList *)> callback)
+{
+    for (int i = 0; i < pDD->CmdListsCount; ++i)
+    {
+        callback(pDD->CmdLists[i]);
+    }
+}
+
 void UIRenderer::render(vk::CommandBuffer commandBuffer, vk::Extent2D framebufferExtent)
 {
     const auto pDD = ImGui::GetDrawData();
 
+    VkDeviceSize requiredIndexBufferSize = 0;
+    VkDeviceSize requiredVertexBufferSize = 0;
+    for_each_cmd_list(pDD, [&](const auto pCL)
+    {
+        requiredIndexBufferSize += pCL->IdxBuffer.size_in_bytes();
+        requiredVertexBufferSize += pCL->VtxBuffer.size_in_bytes();
+    });
+
+    while (requiredIndexBufferSize > indexMemorySize)
+    {
+        indexMemorySize *= 2;
+        std::tie(indexBuffer, indexMemory) = allocate_buffer(indexMemorySize, vk::BufferUsageFlagBits::eIndexBuffer);
+    }
+
+    while (requiredVertexBufferSize > vertexMemorySize)
+    {
+        vertexMemorySize *= 2;
+        std::tie(vertexBuffer, vertexMemory) = allocate_buffer(vertexMemorySize, vk::BufferUsageFlagBits::eVertexBuffer);
+    }
+
+
     uint32_t baseIdx = 0;
     int32_t baseVtx = 0;
-    for (int i = 0; i < pDD->CmdListsCount; ++i)
+    for_each_cmd_list(pDD, [&](const auto pCL)
     {
-        const auto pCL = pDD->CmdLists[i];
-
         indexMemory.withMap([&idx = pCL->IdxBuffer](void *pData) {
             memcpy(pData, idx.Data, idx.size_in_bytes());
         }, sizeof(ImDrawIdx) * baseIdx);
@@ -272,7 +300,7 @@ void UIRenderer::render(vk::CommandBuffer commandBuffer, vk::Extent2D framebuffe
 
         baseIdx += pCL->IdxBuffer.Size;
         baseVtx += pCL->VtxBuffer.Size;
-    }
+    });
 
     indexMemory.flush(0, sizeof(ImDrawIdx) * baseIdx);
     vertexMemory.flush(0, sizeof(ImDrawVert) * baseVtx);
@@ -290,10 +318,8 @@ void UIRenderer::render(vk::CommandBuffer commandBuffer, vk::Extent2D framebuffe
     commandBuffer.pushConstants<PushConstants>(pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex, 0, pushConstants);
 
     baseIdx = baseVtx = 0;
-    for (int i = 0; i < pDD->CmdListsCount; ++i)
+    for_each_cmd_list(pDD, [&](const auto pCL)
     {
-        const auto pCL = pDD->CmdLists[i];
-
         for (const auto& drawCommand : pCL->CmdBuffer)
         {
             ImVec4 clip_rect;
@@ -314,5 +340,13 @@ void UIRenderer::render(vk::CommandBuffer commandBuffer, vk::Extent2D framebuffe
 
         baseIdx += pCL->IdxBuffer.Size;
         baseVtx += pCL->VtxBuffer.Size;
-    }
+    });
+}
+
+std::pair<vk::UniqueBuffer, vma::Allocation> UIRenderer::allocate_buffer(VkDeviceSize size, vk::BufferUsageFlags usage)
+{
+    const auto bufferCreateInfo = vk::BufferCreateInfo()
+        .setSize(size)
+        .setUsage(usage);
+    return pAllocator->createBuffer(bufferCreateInfo, VMA_MEMORY_USAGE_CPU_TO_GPU);
 }
