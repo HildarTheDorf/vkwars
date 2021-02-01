@@ -230,8 +230,8 @@ Renderer::~Renderer()
 
 void Renderer::render()
 {
-    const auto& perFrame = perFrameData[frameIndex++];
-    frameIndex %= perFrameData.size();
+    frameIndex = (frameIndex + 1) % perFrameData.size();
+    const auto& perFrame = perFrameData[frameIndex];
 
     check_success(device->waitForFences(perFrame.fence.get(), true, UINT64_MAX));
 
@@ -261,7 +261,7 @@ void Renderer::render()
         const auto& perImage = perImageData[imageIndex];
 
         device->resetCommandPool(perFrame.commandPool.get());
-        record_command_buffer(perFrame, perImage);
+        record_command_buffer(perImage);
 
         const auto waitSemaphores = std::array{ perFrame.semaphore.get()};
         const auto waitStages = std::array{ vk::PipelineStageFlags(vk::PipelineStageFlagBits::eColorAttachmentOutput) };
@@ -385,8 +385,9 @@ void Renderer::rebuild_swapchain()
     build_swapchain();
 }
 
-void Renderer::record_command_buffer(const PerFrameData& perFrame, const PerImageData& perImage)
+void Renderer::record_command_buffer(const PerImageData& perImage)
 {
+    const auto& perFrame = perFrameData[frameIndex];
     const auto cb = perFrame.commandBuffer;
 
     const auto cbBeginInfo = vk::CommandBufferBeginInfo()
@@ -415,7 +416,7 @@ void Renderer::record_command_buffer(const PerFrameData& perFrame, const PerImag
 
     cb.nextSubpass(vk::SubpassContents::eInline);
 
-    uiRenderer.render(cb, swapchainExtent);
+    uiRenderer.render(cb, swapchainExtent, frameIndex);
 
     cb.endRenderPass();
     cb.end();
