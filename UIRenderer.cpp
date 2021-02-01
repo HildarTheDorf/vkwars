@@ -2,8 +2,6 @@
 
 #include "imgui.h"
 
-#include "RendererUtil.hpp"
-
 #include <glm/glm.hpp>
 
 #include <filesystem>
@@ -48,9 +46,12 @@ static vk::UniqueShaderModule load_shader(vk::Device device, std::filesystem::pa
 }
 
 UIRenderer::UIRenderer()
-    :indexMemorySize(DEFAULT_INDEX_BUFFER_SIZE), vertexMemorySize(DEFAULT_VERTEX_BUFFER_SIZE)
 {
-
+    for (auto& perFrame : perFrameData)
+    {
+        perFrame.indexMemorySize = DEFAULT_INDEX_BUFFER_SIZE;
+        perFrame.vertexMemorySize = DEFAULT_VERTEX_BUFFER_SIZE;
+    }
 }
 
 void UIRenderer::init(vk::Device device, vma::Allocator& allocator, Uploader& uploader, vk::RenderPass renderPass, uint32_t subpass)
@@ -159,8 +160,11 @@ void UIRenderer::init(vk::Device device, vma::Allocator& allocator, Uploader& up
 
     device.updateDescriptorSets(descriptorWrites, nullptr);
 
-    std::tie(indexBuffer, indexMemory) = allocate_buffer(indexMemorySize, vk::BufferUsageFlagBits::eIndexBuffer);
-    std::tie(vertexBuffer, vertexMemory) = allocate_buffer(vertexMemorySize, vk::BufferUsageFlagBits::eVertexBuffer);
+    for (auto& perFrame : perFrameData)
+    {
+        std::tie(perFrame.indexBuffer, perFrame.indexMemory) = allocate_buffer(perFrame.indexMemorySize, vk::BufferUsageFlagBits::eIndexBuffer);
+        std::tie(perFrame.vertexBuffer, perFrame.vertexMemory) = allocate_buffer(perFrame.vertexMemorySize, vk::BufferUsageFlagBits::eVertexBuffer);
+    }
 
     const auto fragmentShader = load_shader(device, "main.frag");
     const auto vertexShader = load_shader(device, "main.vert");
@@ -261,8 +265,9 @@ static void for_each_cmd_list(ImDrawData *pDD, std::function<void(ImDrawList *)>
     }
 }
 
-void UIRenderer::render(vk::CommandBuffer commandBuffer, vk::Extent2D framebufferExtent)
+void UIRenderer::render(vk::CommandBuffer commandBuffer, vk::Extent2D framebufferExtent, uint32_t frameIndex)
 {
+    auto& perFrame = perFrameData[frameIndex];
     const auto pDD = ImGui::GetDrawData();
 
     VkDeviceSize requiredIndexBufferSize = 0;
@@ -273,28 +278,27 @@ void UIRenderer::render(vk::CommandBuffer commandBuffer, vk::Extent2D framebuffe
         requiredVertexBufferSize += pCL->VtxBuffer.size_in_bytes();
     });
 
-    while (requiredIndexBufferSize > indexMemorySize)
+    while (requiredIndexBufferSize > perFrame.indexMemorySize)
     {
-        indexMemorySize *= 2;
-        std::tie(indexBuffer, indexMemory) = allocate_buffer(indexMemorySize, vk::BufferUsageFlagBits::eIndexBuffer);
+        perFrame.indexMemorySize *= 2;
+        std::tie(perFrame.indexBuffer, perFrame.indexMemory) = allocate_buffer(perFrame.indexMemorySize, vk::BufferUsageFlagBits::eIndexBuffer);
     }
 
-    while (requiredVertexBufferSize > vertexMemorySize)
+    while (requiredVertexBufferSize > perFrame.vertexMemorySize)
     {
-        vertexMemorySize *= 2;
-        std::tie(vertexBuffer, vertexMemory) = allocate_buffer(vertexMemorySize, vk::BufferUsageFlagBits::eVertexBuffer);
+        perFrame.vertexMemorySize *= 2;
+        std::tie(perFrame.vertexBuffer, perFrame.vertexMemory) = allocate_buffer(perFrame.vertexMemorySize, vk::BufferUsageFlagBits::eVertexBuffer);
     }
-
 
     uint32_t baseIdx = 0;
     int32_t baseVtx = 0;
     for_each_cmd_list(pDD, [&](const auto pCL)
     {
-        indexMemory.withMap([&idx = pCL->IdxBuffer](void *pData) {
+        perFrame.indexMemory.withMap([&idx = pCL->IdxBuffer](void *pData) {
             memcpy(pData, idx.Data, idx.size_in_bytes());
         }, sizeof(ImDrawIdx) * baseIdx);
 
-        vertexMemory.withMap([&vtx = pCL->VtxBuffer](void *pData) {
+        perFrame.vertexMemory.withMap([&vtx = pCL->VtxBuffer](void *pData) {
             memcpy(pData, vtx.Data, vtx.size_in_bytes());
         }, sizeof(ImDrawVert) * baseVtx);
 
@@ -302,8 +306,8 @@ void UIRenderer::render(vk::CommandBuffer commandBuffer, vk::Extent2D framebuffe
         baseVtx += pCL->VtxBuffer.Size;
     });
 
-    indexMemory.flush(0, sizeof(ImDrawIdx) * baseIdx);
-    vertexMemory.flush(0, sizeof(ImDrawVert) * baseVtx);
+    perFrame.indexMemory.flush(0, sizeof(ImDrawIdx) * baseIdx);
+    perFrame.vertexMemory.flush(0, sizeof(ImDrawVert) * baseVtx);
 
     PushConstants pushConstants;
     pushConstants.scale.x = 2.0f / pDD->DisplaySize.x;
@@ -313,8 +317,8 @@ void UIRenderer::render(vk::CommandBuffer commandBuffer, vk::Extent2D framebuffe
 
     commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout.get(), 0, descriptorSet, nullptr);
     commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, graphicsPipeline.get());
-    commandBuffer.bindIndexBuffer(indexBuffer.get(), 0, vk::IndexType::eUint16);
-    commandBuffer.bindVertexBuffers(0, vertexBuffer.get(), {0});
+    commandBuffer.bindIndexBuffer(perFrame.indexBuffer.get(), 0, vk::IndexType::eUint16);
+    commandBuffer.bindVertexBuffers(0, perFrame.vertexBuffer.get(), {0});
     commandBuffer.pushConstants<PushConstants>(pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex, 0, pushConstants);
 
     baseIdx = baseVtx = 0;
