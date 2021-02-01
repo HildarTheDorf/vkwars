@@ -290,25 +290,6 @@ void UIRenderer::render(vk::CommandBuffer commandBuffer, vk::Extent2D framebuffe
         std::tie(perFrame.vertexBuffer, perFrame.vertexMemory) = allocate_buffer(perFrame.vertexMemorySize, vk::BufferUsageFlagBits::eVertexBuffer);
     }
 
-    uint32_t baseIdx = 0;
-    int32_t baseVtx = 0;
-    for_each_cmd_list(pDD, [&](const auto pCL)
-    {
-        perFrame.indexMemory.withMap([&idx = pCL->IdxBuffer](void *pData) {
-            memcpy(pData, idx.Data, idx.size_in_bytes());
-        }, sizeof(ImDrawIdx) * baseIdx);
-
-        perFrame.vertexMemory.withMap([&vtx = pCL->VtxBuffer](void *pData) {
-            memcpy(pData, vtx.Data, vtx.size_in_bytes());
-        }, sizeof(ImDrawVert) * baseVtx);
-
-        baseIdx += pCL->IdxBuffer.Size;
-        baseVtx += pCL->VtxBuffer.Size;
-    });
-
-    perFrame.indexMemory.flush(0, sizeof(ImDrawIdx) * baseIdx);
-    perFrame.vertexMemory.flush(0, sizeof(ImDrawVert) * baseVtx);
-
     PushConstants pushConstants;
     pushConstants.scale.x = 2.0f / pDD->DisplaySize.x;
     pushConstants.scale.y = 2.0f / pDD->DisplaySize.y;
@@ -321,9 +302,18 @@ void UIRenderer::render(vk::CommandBuffer commandBuffer, vk::Extent2D framebuffe
     commandBuffer.bindVertexBuffers(0, perFrame.vertexBuffer.get(), {0});
     commandBuffer.pushConstants<PushConstants>(pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex, 0, pushConstants);
 
-    baseIdx = baseVtx = 0;
+    uint32_t baseIdx = 0;
+    int32_t baseVtx = 0;
     for_each_cmd_list(pDD, [&](const auto pCL)
     {
+        perFrame.indexMemory.withMap([&idx = pCL->IdxBuffer](void *pData) {
+            memcpy(pData, idx.Data, idx.size_in_bytes());
+        }, sizeof(ImDrawIdx) * baseIdx);
+
+        perFrame.vertexMemory.withMap([&vtx = pCL->VtxBuffer](void *pData) {
+            memcpy(pData, vtx.Data, vtx.size_in_bytes());
+        }, sizeof(ImDrawVert) * baseVtx);
+
         for (const auto& drawCommand : pCL->CmdBuffer)
         {
             ImVec4 clip_rect;
@@ -345,6 +335,9 @@ void UIRenderer::render(vk::CommandBuffer commandBuffer, vk::Extent2D framebuffe
         baseIdx += pCL->IdxBuffer.Size;
         baseVtx += pCL->VtxBuffer.Size;
     });
+
+    perFrame.indexMemory.flush(0, sizeof(ImDrawIdx) * baseIdx);
+    perFrame.vertexMemory.flush(0, sizeof(ImDrawVert) * baseVtx);
 }
 
 std::pair<vk::UniqueBuffer, vma::Allocation> UIRenderer::allocate_buffer(VkDeviceSize size, vk::BufferUsageFlags usage)
