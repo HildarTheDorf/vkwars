@@ -6,8 +6,12 @@ class Uploader
 {
 public:
     Uploader(vk::Device device, uint32_t queueFamilyIndex, uint32_t queueIndex, vma::Allocator& allocater);
-    //FIXME: Rule of 5
+    Uploader(const Uploader&) = delete;
+    Uploader(Uploader&&) = default;
     ~Uploader();
+
+    Uploader& operator=(const Uploader&) = delete;
+    Uploader& operator=(Uploader&&) = delete;
 
     void begin();
     void end();
