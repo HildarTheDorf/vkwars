@@ -345,5 +345,5 @@ std::pair<vk::UniqueBuffer, vma::Allocation> UIRenderer::allocate_buffer(VkDevic
     const auto bufferCreateInfo = vk::BufferCreateInfo()
         .setSize(size)
         .setUsage(usage);
-    return pAllocator->createBuffer(bufferCreateInfo, VMA_MEMORY_USAGE_CPU_TO_GPU);
+    return pAllocator->createBuffer(bufferCreateInfo, VMA_MEMORY_USAGE_CPU_TO_GPU, VMA_ALLOCATION_CREATE_MAPPED_BIT);
 }
