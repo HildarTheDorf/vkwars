@@ -1,6 +1,5 @@
 #include "Renderer.hpp"
 
-#include "RendererUtil.hpp"
 #include "Uploader.hpp"
 
 constexpr auto DEPTH_FORMAT = vk::Format::eD16Unorm;
@@ -424,10 +423,10 @@ void Renderer::record_command_buffer(const PerImageData& perImage)
 
 void Renderer::wait_all_fences() const
 {
-    std::vector<vk::Fence> allFences;
-    for (const auto& perFrame : perFrameData)
+    std::array<vk::Fence, MAX_FRAMES_IN_FLIGHT> allFences;
+    for (size_t i = 0; i < allFences.size(); ++i)
     {
-        allFences.emplace_back(perFrame.fence.get());
+        allFences[i] = perFrameData[i].fence.get();
     }
     check_success(device->waitForFences(allFences, true, UINT64_MAX));
 }
